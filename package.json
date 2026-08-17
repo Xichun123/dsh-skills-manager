@@ -1,6 +1,6 @@
 {
   "name": "dsh-skills-manager",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A DeepSeek Harness plugin for installing and managing skills by global or workspace scope.",
   "repository": {
     "type": "git",
