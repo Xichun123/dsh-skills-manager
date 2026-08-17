@@ -157,8 +157,13 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
 
   useEffect(() => { ensureKeyframes() }, [])
 
+  // 追踪用户是否主动选过「只看全局」，避免 useEffect 把它重置回第一个工作区
+  const userChoseGlobal = useRef(false)
+
   useEffect(() => {
-    if (projectRoot === undefined && workspaces.items.length > 0) setProjectRoot(workspaces.items[0].path)
+    // 仅当用户未主动选择「只看全局」时，才自动选中第一个工作区
+    if (projectRoot === undefined && !userChoseGlobal.current && workspaces.items.length > 0) setProjectRoot(workspaces.items[0].path)
+    // 当前选中的工作区被移除时，回退到第一个工作区
     if (projectRoot !== undefined && !workspaces.items.some(item => item.path === projectRoot)) setProjectRoot(workspaces.items[0]?.path)
   }, [projectRoot, workspaces.items])
 
@@ -264,9 +269,10 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
         h(Search, { size: 14, 'aria-hidden': true, style: { position: 'absolute', left: 9, color: tokens.secondary, pointerEvents: 'none' } }),
         h('input', { type: 'search', value: query, placeholder: '搜索 skill…', 'aria-label': '搜索 skill', onChange: (event: ChangeEvent<HTMLInputElement>) => setQuery(event.currentTarget.value), style: inputStyle }),
       ),
-      h('label', { style: { display: 'flex', flex: '1 1 220px', minWidth: 0, alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 13, color: tokens.secondary } }, '项目范围',
-        h('select', { value: projectRoot ?? '', onChange: (event: ChangeEvent<HTMLSelectElement>) => setProjectRoot(event.currentTarget.value || undefined), style: { ...selectStyle, width: '100%' } },
-          h('option', { value: '' }, '只看全局'),
+      h('label', { style: { display: 'flex', flex: '1 1 220px', minWidth: 0, alignItems: 'center', gap: 8, fontSize: 13, color: tokens.secondary } },
+        h('span', { style: { flex: '0 0 auto' } }, '项目范围'),
+        h('select', { value: projectRoot ?? '__global__', onChange: (event: ChangeEvent<HTMLSelectElement>) => { const value = event.currentTarget.value; if (value === '__global__') { userChoseGlobal.current = true; setProjectRoot(undefined) } else { userChoseGlobal.current = false; setProjectRoot(value) } }, style: { ...selectStyle, flex: '1 1 auto', minWidth: 0, maxWidth: 'none' } },
+          h('option', { value: '__global__' }, '只看全局'),
           ...workspaces.items.map(workspace => h('option', { key: workspace.workspaceId, value: workspace.path }, workspace.title)),
         ),
       ),
