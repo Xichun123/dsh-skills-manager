@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-skills-manager
+      name: 'file:///Users/xichun/Downloads/agent/dsh-skill-manager/src/index.ts'

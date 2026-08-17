@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "dsh-plugin-builder": {
+      "source": "kingjly/dsh-plugin-builder",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "02a0a81ef4995945a4de6cbc826e1ef12a6cd29924cb245fa4cb913ee39de5eb"
+    }
+  }
+}
