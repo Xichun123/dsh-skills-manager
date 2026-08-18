@@ -32,6 +32,7 @@ test('updates a tracked skill without losing enabled scopes', async (context) =>
   const manager = new SkillManager(hostContext, { storageDir })
   let catalog = await manager.install(source, projectRoot)
   assert.equal(catalog.entries[0].updateSupported, true)
+  assert.equal(catalog.entries[0].sourceType, 'local')
   assert.equal(catalog.entries[0].sourcePath, source)
 
   await manager.setEnabled('alpha', 'global', projectRoot, true)

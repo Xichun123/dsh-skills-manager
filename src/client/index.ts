@@ -423,8 +423,8 @@ function SkillRow(props: {
 }
 
 function SourceBadge(props: { readonly entry: SkillCatalogEntry }): ReturnType<typeof h> {
-  const remote = props.entry.sourceType === 'git' || Boolean(props.entry.sourceUrl)
-  const local = props.entry.sourceType === 'local' || Boolean(props.entry.sourcePath)
+  const remote = props.entry.sourceType === 'git'
+  const local = props.entry.sourceType === 'local'
   const Icon = remote ? GitBranch : local ? FolderGit : AlertCircle
   const label = remote ? 'Git' : local ? '本机' : '未知'
   const title = remote ? props.entry.sourceUrl : local ? props.entry.sourcePath : '来源未知，更新时需选择本机来源目录'
