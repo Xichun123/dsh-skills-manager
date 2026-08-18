@@ -5,12 +5,8 @@ import { projectRootForSession } from '../lib/types/client/session.js'
 
 function entry(overrides = {}) {
   return {
-    name: 'alpha',
-    description: 'test',
     globalEnabled: false,
-    projectEnabled: false,
     effectiveEnabled: false,
-    updateSupported: true,
     ...overrides,
   }
 }
@@ -29,7 +25,6 @@ test('resolves the composer project root from the session list summary', () => {
 test('project popover treats global-only skills as enabled and locked', () => {
   const row = projectPopoverRow(entry({
     globalEnabled: true,
-    projectEnabled: false,
     effectiveEnabled: true,
   }))
 
@@ -41,11 +36,8 @@ test('project popover treats global-only skills as enabled and locked', () => {
   })
 })
 
-test('project popover still toggles project-only skills', () => {
-  const row = projectPopoverRow(entry({
-    projectEnabled: true,
-    effectiveEnabled: true,
-  }))
+test('project popover still toggles non-global enabled skills', () => {
+  const row = projectPopoverRow(entry({ effectiveEnabled: true }))
 
   assert.equal(row.checked, true)
   assert.equal(row.disabled, false)
@@ -55,7 +47,7 @@ test('project popover still toggles project-only skills', () => {
 
 test('project popover counts effective enabled skills', () => {
   assert.equal(projectPopoverEnabledCount([
-    entry({ name: 'alpha', globalEnabled: true, effectiveEnabled: true }),
-    entry({ name: 'beta' }),
+    entry({ globalEnabled: true, effectiveEnabled: true }),
+    entry(),
   ]), 1)
 })

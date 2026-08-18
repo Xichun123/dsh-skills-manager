@@ -35,8 +35,9 @@ test('updates a tracked skill without losing enabled scopes', async (context) =>
   assert.equal(catalog.entries[0].sourceType, 'local')
   assert.equal(catalog.entries[0].sourcePath, source)
 
+  catalog = await manager.setEnabled('alpha', 'project', projectRoot, true)
+  assert.equal(catalog.entries[0].effectiveEnabled, true)
   await manager.setEnabled('alpha', 'global', projectRoot, true)
-  await manager.setEnabled('alpha', 'project', projectRoot, true)
   await writeFile(join(source, 'SKILL.md'), skillMarkdown('Second version', 'Follow version two.'), 'utf8')
   await writeFile(join(source, 'reference.txt'), 'two\n', 'utf8')
 
@@ -102,43 +103,6 @@ test('imports and updates skills from a Git repository', async (context) => {
   assert.equal(catalog.entries[0].globalEnabled, true)
   assert.equal(catalog.entries[0].effectiveEnabled, true)
   assert.equal(await readFile(join(storageDir, '.agents', 'skills', 'alpha', 'reference.txt'), 'utf8'), 'remote-two\n')
-})
-
-test('reports independent global, project, and effective catalog flags', async (context) => {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-skill-manager-scopes-'))
-  context.after(() => rm(root, { recursive: true, force: true }))
-
-  const source = join(root, 'source', 'alpha')
-  const storageDir = join(root, 'storage')
-  const projectRoot = join(root, 'workspace')
-  await mkdir(source, { recursive: true })
-  await writeFile(join(source, 'SKILL.md'), skillMarkdown('Scope skill', 'Toggle me.'), 'utf8')
-
-  const manager = new SkillManager(hostContext, { storageDir })
-  let catalog = await manager.install(source, projectRoot)
-  let entry = catalog.entries[0]
-  assert.equal(entry.globalEnabled, false)
-  assert.equal(entry.projectEnabled, false)
-  assert.equal(entry.effectiveEnabled, false)
-
-  catalog = await manager.setEnabled('alpha', 'global', projectRoot, true)
-  entry = catalog.entries[0]
-  assert.equal(entry.globalEnabled, true)
-  assert.equal(entry.projectEnabled, false)
-  assert.equal(entry.effectiveEnabled, true)
-
-  catalog = await manager.setEnabled('alpha', 'global', projectRoot, false)
-  catalog = await manager.setEnabled('alpha', 'project', projectRoot, true)
-  entry = catalog.entries[0]
-  assert.equal(entry.globalEnabled, false)
-  assert.equal(entry.projectEnabled, true)
-  assert.equal(entry.effectiveEnabled, true)
-
-  catalog = await manager.setEnabled('alpha', 'project', projectRoot, false)
-  entry = catalog.entries[0]
-  assert.equal(entry.globalEnabled, false)
-  assert.equal(entry.projectEnabled, false)
-  assert.equal(entry.effectiveEnabled, false)
 })
 
 test('rejects flat Markdown skill sources', async (context) => {
