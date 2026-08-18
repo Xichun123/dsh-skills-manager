@@ -11,10 +11,11 @@ import GitBranch from 'lucide-react/dist/esm/icons/git-branch.mjs'
 import PackageOpen from 'lucide-react/dist/esm/icons/package-open.mjs'
 import Puzzle from 'lucide-react/dist/esm/icons/puzzle.mjs'
 import AlertCircle from 'lucide-react/dist/esm/icons/alert-circle.mjs'
-import type { ClientContext, WorkspaceListState } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ClientContext, SessionId, SessionListState, WorkspaceListState } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ConnectionHandle, RpcResult } from '@deepseek-ai/dsh-client-connection/client'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SkillCatalog, SkillCatalogEntry } from '../types.js'
+import { projectRootForSession } from './session.js'
 import type {} from '@deepseek-ai/dsh-client-connection/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -33,7 +34,8 @@ interface SectionProps extends ManagerApi {
 }
 
 interface ComposerProps extends ManagerApi {
-  readonly session: { readonly cwd?: string }
+  readonly session: { readonly sessionId: SessionId }
+  readonly useSessions: SnapshotSelectorHook<SessionListState>
 }
 
 interface IconProps {
@@ -280,8 +282,8 @@ function EmptyState(props: { readonly hasAny: boolean }): ReturnType<typeof h> {
 }
 
 function ComposerSkillButton(props: ComposerProps): ReturnType<typeof h> {
-  const { session, list, mutate } = props
-  const projectRoot = session.cwd
+  const { session, useSessions, list, mutate } = props
+  const projectRoot = useSessions(state => projectRootForSession(state, session.sessionId))
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement | null>(null)
 
