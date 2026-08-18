@@ -9,6 +9,10 @@ import { promisify } from 'node:util'
 import { SkillManager } from '../lib/index.js'
 
 const execFileAsync = promisify(execFile)
+const hostContext = {
+  get: () => undefined,
+  logger: { warn: () => undefined },
+}
 
 function skillMarkdown(description, body) {
   return `---\nname: alpha\ndescription: ${description}\n---\n\n${body}\n`
@@ -25,28 +29,42 @@ test('updates a tracked skill without losing enabled scopes', async (context) =>
   await writeFile(join(source, 'SKILL.md'), skillMarkdown('First version', 'Follow version one.'), 'utf8')
   await writeFile(join(source, 'reference.txt'), 'one\n', 'utf8')
 
-  const manager = new SkillManager({}, { storageDir })
+  const manager = new SkillManager(hostContext, { storageDir })
   let catalog = await manager.install(source, projectRoot)
-  const installedAt = catalog.entries[0].installedAt
   assert.equal(catalog.entries[0].updateSupported, true)
+  assert.equal(catalog.entries[0].sourcePath, source)
 
   await manager.setEnabled('alpha', 'global', projectRoot, true)
   await manager.setEnabled('alpha', 'project', projectRoot, true)
   await writeFile(join(source, 'SKILL.md'), skillMarkdown('Second version', 'Follow version two.'), 'utf8')
   await writeFile(join(source, 'reference.txt'), 'two\n', 'utf8')
 
-  catalog = await manager.checkUpdates(projectRoot)
-  assert.equal(catalog.entries[0].updateAvailable, true)
-
   catalog = await manager.update('alpha', undefined, projectRoot)
   const updated = catalog.entries[0]
   assert.equal(updated.description, 'Second version')
-  assert.equal(updated.installedAt, installedAt)
   assert.equal(updated.globalEnabled, true)
   assert.equal(updated.projectEnabled, true)
-  assert.equal(updated.updateAvailable, false)
-  assert.ok(updated.updatedAt)
-  assert.equal(await readFile(join(storageDir, 'library', 'alpha', 'reference.txt'), 'utf8'), 'two\n')
+  assert.equal(await readFile(join(storageDir, '.agents', 'skills', 'alpha', 'reference.txt'), 'utf8'), 'two\n')
+})
+
+test('removes the private library entry and its scope state', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skill-manager-remove-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+
+  const source = join(root, 'source', 'alpha')
+  const storageDir = join(root, 'storage')
+  await mkdir(source, { recursive: true })
+  await writeFile(join(source, 'SKILL.md'), skillMarkdown('Disposable skill', 'Remove me.'), 'utf8')
+
+  const manager = new SkillManager(hostContext, { storageDir })
+  await manager.install(source)
+  await manager.setEnabled('alpha', 'global', undefined, true)
+  const catalog = await manager.remove('alpha')
+
+  assert.deepEqual(catalog.entries, [])
+  await assert.rejects(readFile(join(storageDir, '.agents', 'skills', 'alpha', 'SKILL.md'), 'utf8'), /ENOENT/)
+  const state = JSON.parse(await readFile(join(storageDir, 'state.json'), 'utf8'))
+  assert.deepEqual(state, { version: 1, globalEnabled: [], projectEnabled: {} })
 })
 
 test('imports and updates skills from a Git repository', async (context) => {
@@ -66,11 +84,10 @@ test('imports and updates skills from a Git repository', async (context) => {
   await execFileAsync('git', ['-C', repository, 'add', '.'])
   await execFileAsync('git', ['-C', repository, 'commit', '-m', 'initial'])
 
-  const manager = new SkillManager({}, { storageDir })
+  const manager = new SkillManager(hostContext, { storageDir })
   let catalog = await manager.installRemote(pathToFileURL(repository).href, projectRoot)
   assert.equal(catalog.entries[0].sourceType, 'git')
-  assert.equal(catalog.entries[0].sourceSubpath, 'skills/alpha')
-  assert.equal(catalog.entries[0].updateAvailable, false)
+  assert.equal(catalog.entries[0].sourceUrl, pathToFileURL(repository).href)
   await manager.setEnabled('alpha', 'global', projectRoot, true)
 
   await writeFile(join(skill, 'SKILL.md'), skillMarkdown('Remote version two', 'Use remote two.'), 'utf8')
@@ -78,17 +95,24 @@ test('imports and updates skills from a Git repository', async (context) => {
   await execFileAsync('git', ['-C', repository, 'add', '.'])
   await execFileAsync('git', ['-C', repository, 'commit', '-m', 'update'])
 
-  catalog = await manager.checkUpdates(projectRoot)
-  assert.equal(catalog.entries[0].updateAvailable, true)
-
   catalog = await manager.update('alpha', undefined, projectRoot)
   assert.equal(catalog.entries[0].description, 'Remote version two')
   assert.equal(catalog.entries[0].globalEnabled, true)
-  assert.equal(catalog.entries[0].updateAvailable, false)
-  assert.equal(await readFile(join(storageDir, 'library', 'alpha', 'reference.txt'), 'utf8'), 'remote-two\n')
+  assert.equal(await readFile(join(storageDir, '.agents', 'skills', 'alpha', 'reference.txt'), 'utf8'), 'remote-two\n')
 })
 
-test('rejects repository skill symlinks that escape the source root', async (context) => {
+test('rejects flat Markdown skill sources', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skill-manager-flat-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+  const source = join(root, 'source')
+  await mkdir(source, { recursive: true })
+  await writeFile(join(source, 'alpha.md'), skillMarkdown('Flat skill', 'No directory bundle.'), 'utf8')
+
+  const manager = new SkillManager(hostContext, { storageDir: join(root, 'storage') })
+  await assert.rejects(manager.install(source), /skills CLI failed to install/)
+})
+
+test('rejects repository symlinks that escape the source root', async (context) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-skill-manager-symlink-'))
   context.after(() => rm(root, { recursive: true, force: true }))
 
@@ -99,21 +123,32 @@ test('rejects repository skill symlinks that escape the source root', async (con
   await execFileAsync('git', ['-C', repository, 'config', 'user.email', 'test@example.com'])
   await execFileAsync('git', ['-C', repository, 'config', 'user.name', 'Skill Manager Test'])
   await writeFile(join(skill, 'SKILL.md'), skillMarkdown('Unsafe links', 'Do not load outside files.'), 'utf8')
-  await symlink('../../outside.txt', join(skill, 'outside.txt'))
+  await symlink('/etc/passwd', join(skill, 'outside.txt'))
   await execFileAsync('git', ['-C', repository, 'add', '.'])
   await execFileAsync('git', ['-C', repository, 'commit', '-m', 'unsafe symlink'])
 
-  const manager = new SkillManager({}, { storageDir: join(root, 'storage') })
-  await assert.rejects(
-    manager.installRemote(pathToFileURL(repository).href),
-    /symlink escapes its source root/,
-  )
+  const storageDir = join(root, 'storage')
+  const manager = new SkillManager(hostContext, { storageDir })
+  await assert.rejects(manager.installRemote(pathToFileURL(repository).href), /broken or escaping symlink/)
+})
+
+test('rejects local symlinks that escape the source root', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skill-manager-local-symlink-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+
+  const source = join(root, 'source', 'alpha')
+  await mkdir(source, { recursive: true })
+  await writeFile(join(source, 'SKILL.md'), skillMarkdown('Unsafe local links', 'Do not load outside files.'), 'utf8')
+  await symlink('/etc/passwd', join(source, 'outside.txt'))
+
+  const manager = new SkillManager(hostContext, { storageDir: join(root, 'storage') })
+  await assert.rejects(manager.install(source), /broken or escaping symlink/)
 })
 
 test('rejects credentials embedded in repository URLs', async (context) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-skill-manager-security-'))
   context.after(() => rm(root, { recursive: true, force: true }))
-  const manager = new SkillManager({}, { storageDir: join(root, 'storage') })
+  const manager = new SkillManager(hostContext, { storageDir: join(root, 'storage') })
   await manager.catalog()
   await assert.rejects(
     manager.installRemote('https://token@github.com/example/skills.git'),

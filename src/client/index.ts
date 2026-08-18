@@ -1,4 +1,4 @@
-import { createElement as h, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type CSSProperties, type ComponentType, type FormEvent, type ReactNode } from 'react'
+import { createElement as h, useCallback, useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type ComponentType, type FormEvent } from 'react'
 import Wrench from 'lucide-react/dist/esm/icons/wrench.mjs'
 import Plus from 'lucide-react/dist/esm/icons/plus.mjs'
 import RefreshCw from 'lucide-react/dist/esm/icons/refresh-cw.mjs'
@@ -11,20 +11,15 @@ import GitBranch from 'lucide-react/dist/esm/icons/git-branch.mjs'
 import PackageOpen from 'lucide-react/dist/esm/icons/package-open.mjs'
 import Puzzle from 'lucide-react/dist/esm/icons/puzzle.mjs'
 import AlertCircle from 'lucide-react/dist/esm/icons/alert-circle.mjs'
-import Check from 'lucide-react/dist/esm/icons/check.mjs'
-import type { ClientContext, ObservableSnapshot, SessionListState, WorkspaceListState } from '@deepseek-ai/dsh-client-runtime/client'
-import type { ConnectionHandle, SessionId } from '@deepseek-ai/dsh-client-connection/client'
+import type { ClientContext, WorkspaceListState } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ConnectionHandle, RpcResult } from '@deepseek-ai/dsh-client-connection/client'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SkillCatalog, SkillCatalogEntry } from '../types.js'
 import type {} from '@deepseek-ai/dsh-client-connection/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 
-export const inject = ['connection', 'slots', 'workspaces', 'sessions']
-
-interface ClientContextWithConnection extends ClientContext {
-  readonly connection: ConnectionHandle
-}
+export const inject = ['connection', 'slots', 'workspaces']
 
 interface ManagerApi {
   readonly list: (projectRoot?: string) => Promise<SkillCatalog>
@@ -38,13 +33,7 @@ interface SectionProps extends ManagerApi {
 }
 
 interface ComposerProps extends ManagerApi {
-  readonly session: { readonly sessionId: SessionId }
-  readonly sessions: ObservableSnapshot<SessionListState>
-}
-
-interface RpcResult {
-  readonly ok: true
-  readonly value: SkillCatalog
+  readonly session: { readonly cwd?: string }
 }
 
 interface IconProps {
@@ -61,6 +50,10 @@ function ensureKeyframes(): void {
   style.id = ICON_SPIN[0]
   style.textContent = `
     @keyframes ${ICON_SPIN[0]} { ${ICON_SPIN[1]} }
+    .dsh-skill-manager-row:hover {
+      border-color: ${tokens.borderStrong} !important;
+      background: ${tokens.surfaceHover} !important;
+    }
     @container (max-width: 360px) {
       .dsh-skill-manager-row { grid-template-columns: minmax(0, 1fr) !important; }
       .dsh-skill-manager-row-icon { display: none !important; }
@@ -82,12 +75,11 @@ const tokens = {
   danger: 'var(--fg-danger, #dc2626)',
   secondary: 'var(--fg-secondary, #64748b)',
   surfaceHover: 'var(--bg-hover, rgba(148, 163, 184, .08))',
-  surfaceActive: 'var(--bg-active, rgba(99, 102, 241, .12))',
 }
 
 const panelStyle: CSSProperties = { containerType: 'inline-size', display: 'grid', gap: 18, width: '100%', minWidth: 0, maxWidth: 760, padding: '6px 0 36px' }
 
-function buttonStyle(tone: 'primary' | 'ghost' | 'danger', disabled: boolean): CSSProperties {
+function buttonStyle(tone: 'primary' | 'ghost', disabled: boolean): CSSProperties {
   const base: CSSProperties = {
     display: 'inline-flex', alignItems: 'center', gap: 6, minHeight: 32, padding: '0 12px',
     borderRadius: 8, border: `1px solid transparent`, fontSize: 13, fontWeight: 500,
@@ -95,7 +87,6 @@ function buttonStyle(tone: 'primary' | 'ghost' | 'danger', disabled: boolean): C
     transition: 'background .15s ease, border-color .15s ease',
   }
   if (tone === 'primary') return { ...base, background: tokens.accent, color: 'var(--fg-on-accent, #fff)', border: 'none' }
-  if (tone === 'danger') return { ...base, background: 'transparent', color: tokens.danger, border: `1px solid ${tokens.border}` }
   return { ...base, background: 'transparent', color: 'inherit', border: `1px solid ${tokens.border}` }
 }
 
@@ -115,32 +106,31 @@ const selectStyle: CSSProperties = {
   border: `1px solid ${tokens.border}`, background: 'var(--bg-primary, transparent)', color: 'inherit', fontSize: 13,
 }
 
+const checkboxStyle: CSSProperties = { width: 16, height: 16, margin: 0, accentColor: tokens.accent, flex: '0 0 auto' }
+
 export function apply(ctx: ClientContext): void {
-  const client = ctx as ClientContextWithConnection
-  const list = async (projectRoot?: string): Promise<SkillCatalog> => {
-    const result = await client.connection.rpc.call('/skill-manager', 'list', projectRoot ? { projectRoot } : {}) as RpcResult | { ok: false; error: { message: string } }
+  const connection = (ctx as unknown as { readonly connection: ConnectionHandle }).connection
+  const request = async (endpoint: string, payload: Record<string, unknown> = {}): Promise<SkillCatalog> => {
+    const result = await connection.rpc.call('/skill-manager', endpoint, payload) as RpcResult<SkillCatalog>
     if (!result.ok) throw new Error(result.error.message)
     return result.value
   }
-  const mutate = async (endpoint: string, payload: Record<string, unknown>): Promise<SkillCatalog> => {
-    const result = await client.connection.rpc.call('/skill-manager', endpoint, payload) as RpcResult | { ok: false; error: { message: string } }
-    if (!result.ok) throw new Error(result.error.message)
-    return result.value
-  }
+  const list = (projectRoot?: string): Promise<SkillCatalog> => request('list', projectRoot ? { projectRoot } : {})
+  const mutate = request
 
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'skills',
     order: 35,
     label: 'Skill 管理',
-    inject: () => ({ list, mutate, pickDirectory: () => ctx.workspaces.pickDirectory(), loopback: client.connection.isLoopback }),
+    inject: () => ({ list, mutate, pickDirectory: () => ctx.workspaces.pickDirectory(), loopback: connection.isLoopback }),
   }, SkillManagerSection as never))
 
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
     name: 'conversation.input.left',
     id: 'skill-manager',
     order: 10,
-    inject: () => ({ list, mutate, sessions: ctx.sessions.list }),
+    inject: () => ({ list, mutate }),
   }, ComposerSkillButton as never))
 }
 
@@ -190,19 +180,8 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
     }
   }, [])
 
-  const filtered = useMemo(() => {
-    const normalized = query.trim().toLocaleLowerCase()
-    return (catalog?.entries ?? []).filter(entry => normalized.length === 0 || `${entry.name} ${entry.description}`.toLocaleLowerCase().includes(normalized))
-  }, [catalog, query])
-
-  const stats = useMemo(() => {
-    const entries = catalog?.entries ?? []
-    return {
-      total: entries.length,
-      global: entries.filter(entry => entry.globalEnabled).length,
-      project: entries.filter(entry => entry.projectEnabled).length,
-    }
-  }, [catalog])
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  const filtered = (catalog?.entries ?? []).filter(entry => normalizedQuery.length === 0 || `${entry.name} ${entry.description}`.toLocaleLowerCase().includes(normalizedQuery))
 
   const importSkill = async () => {
     const path = await pickDirectory()
@@ -220,12 +199,8 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
   }
 
   const updateSkill = async (entry: SkillCatalogEntry) => {
-    let path: string | undefined
-    const remote = entry.sourceType === 'git' || Boolean(entry.sourceUrl)
-    if (!entry.updateSupported || (entry.updateError && !remote)) {
-      path = await pickDirectory() ?? undefined
-      if (!path) return
-    }
+    const path = entry.updateSupported ? undefined : await pickDirectory() ?? undefined
+    if (!entry.updateSupported && !path) return
     await run(() => mutate('update', { name: entry.name, path, projectRoot }))
   }
 
@@ -238,8 +213,6 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
         busy ? h(RefreshCw, { size: 14, 'aria-hidden': true, style: spinnerStyle }) : null,
       ),
       h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
-        h('button', { type: 'button', style: buttonStyle('ghost', busy), onClick: () => void run(() => mutate('check-updates', { projectRoot })), disabled: busy, title: '检查已记录来源是否有变化' },
-          h(RefreshCw, { size: 14, 'aria-hidden': true }), '检查更新'),
         h('button', { type: 'button', style: buttonStyle('ghost', busy || !loopback), onClick: () => setRepositoryOpen(value => !value), disabled: busy || !loopback, title: loopback ? '从 Git 仓库导入 skill' : '仅在本机连接时可导入' },
           h(GitBranch, { size: 14, 'aria-hidden': true }), '仓库'),
         h('button', { type: 'button', style: buttonStyle('primary', busy || !loopback), onClick: importSkill, disabled: busy || !loopback, title: loopback ? '从本机目录导入 skill' : '仅在本机连接时可导入' },
@@ -277,11 +250,6 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
         ),
       ),
     ),
-    h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
-      h(StatChip, { label: '已安装', value: stats.total }),
-      h(StatChip, { label: '全局启用', value: stats.global, tone: 'accent' }),
-      projectRoot !== undefined ? h(StatChip, { label: '项目启用', value: stats.project, tone: 'accent' }) : null,
-    ),
     error ? h('div', { role: 'alert', style: { display: 'flex', gap: 8, alignItems: 'center', margin: 0, padding: '9px 12px', borderRadius: 8, fontSize: 13, color: tokens.danger, background: 'rgba(220, 38, 38, .08)', border: '1px solid rgba(220, 38, 38, .28)' } },
       h(AlertCircle, { size: 15, 'aria-hidden': true }), error) : null,
     h('section', { style: { display: 'grid', width: '100%', minWidth: 0, gap: 8 }, 'aria-label': '已安装 skill' },
@@ -304,14 +272,6 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
   )
 }
 
-function StatChip(props: { readonly label: string; readonly value: number; readonly tone?: 'accent' }): ReturnType<typeof h> {
-  const active = (props.tone === 'accent') && props.value > 0
-  return h('span', { style: { display: 'inline-flex', alignItems: 'baseline', gap: 6, padding: '4px 10px', borderRadius: 999, fontSize: 12, border: `1px solid ${active ? 'rgba(99, 102, 241, .4)' : tokens.border}`, color: active ? tokens.accent : tokens.secondary, background: active ? 'rgba(99, 102, 241, .08)' : 'transparent' } },
-    h('span', null, props.label),
-    h('strong', { style: { fontSize: 13, fontWeight: 600 } }, String(props.value)),
-  )
-}
-
 function EmptyState(props: { readonly hasAny: boolean }): ReturnType<typeof h> {
   return h('div', { style: { display: 'grid', justifyItems: 'center', gap: 8, padding: '36px 16px', borderRadius: 10, border: `1px dashed ${tokens.borderStrong}`, color: tokens.secondary, textAlign: 'center' } },
     h(PackageOpen, { size: 26, 'aria-hidden': true }),
@@ -320,9 +280,8 @@ function EmptyState(props: { readonly hasAny: boolean }): ReturnType<typeof h> {
 }
 
 function ComposerSkillButton(props: ComposerProps): ReturnType<typeof h> {
-  const { session, sessions, list, mutate } = props
-  const snapshot = useSyncExternalStore(sessions.subscribe, sessions.getSnapshot, sessions.getSnapshot)
-  const projectRoot = snapshot.byId[session.sessionId]?.cwd
+  const { session, list, mutate } = props
+  const projectRoot = session.cwd
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement | null>(null)
 
@@ -413,7 +372,7 @@ function ProjectSkillPopover(props: ManagerApi & { readonly projectRoot: string;
           : catalog.entries.map(entry => h('label', { key: entry.name, style: { display: 'grid', gridTemplateColumns: '14px minmax(0, 1fr) 30px', gap: 8, alignItems: 'center', padding: '7px 6px', borderRadius: 7, fontSize: 13, cursor: busy ? 'default' : 'pointer' }, title: entry.description || entry.name },
             h(Puzzle, { size: 13, 'aria-hidden': true, style: { color: entry.projectEnabled ? tokens.accent : tokens.secondary } }),
             h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, entry.name),
-            h(Toggle, { checked: entry.projectEnabled, disabled: busy, onChange: enabled => void toggle(entry, enabled), label: entry.name }),
+            h('input', { type: 'checkbox', checked: entry.projectEnabled, disabled: busy, onChange: (event: ChangeEvent<HTMLInputElement>) => void toggle(entry, event.currentTarget.checked), 'aria-label': `${entry.name} 项目开关`, style: checkboxStyle }),
           )),
     ),
     busy ? h('div', { style: { display: 'flex', justifyContent: 'flex-end', paddingTop: 2 } }, h(RefreshCw, { size: 12, 'aria-hidden': true, style: spinnerStyle })) : null,
@@ -431,17 +390,14 @@ function SkillRow(props: {
   readonly onRemove: () => void
 }): ReturnType<typeof h> {
   const { entry, projectLabel, projectAvailable, busy, onGlobalChange, onProjectChange, onUpdate, onRemove } = props
-  const [hover, setHover] = useState(false)
   return h('article', {
     className: 'dsh-skill-manager-row',
     style: {
       display: 'grid', gridTemplateColumns: '32px minmax(0, 1fr)', gap: 12, alignItems: 'center',
       width: '100%', minWidth: 0, maxWidth: '100%', overflow: 'hidden', boxSizing: 'border-box',
-      padding: '12px 14px', borderRadius: 10, border: `1px solid ${hover ? tokens.borderStrong : tokens.border}`,
-      background: hover ? tokens.surfaceHover : 'transparent', transition: 'border-color .15s ease, background .15s ease',
+      padding: '12px 14px', borderRadius: 10, border: `1px solid ${tokens.border}`,
+      background: 'transparent', transition: 'border-color .15s ease, background .15s ease',
     },
-    onMouseEnter: () => setHover(true),
-    onMouseLeave: () => setHover(false),
   },
     h('div', { className: 'dsh-skill-manager-row-icon', style: { display: 'grid', placeItems: 'center', width: 32, height: 32, borderRadius: 8, color: entry.effectiveEnabled ? tokens.accent : tokens.secondary, background: entry.effectiveEnabled ? 'rgba(99, 102, 241, .1)' : 'rgba(148, 163, 184, .1)' } },
       h(Puzzle, { size: 16, 'aria-hidden': true }),
@@ -452,15 +408,13 @@ function SkillRow(props: {
         h(SourceBadge, { entry }),
         h(StatusBadge, { active: entry.globalEnabled, icon: Globe, label: '全局' }),
         projectAvailable ? h(StatusBadge, { active: entry.projectEnabled, icon: FolderGit, label: projectLabel }) : null,
-        entry.updateAvailable ? h('span', { style: { flex: '0 0 auto', fontSize: 11, color: tokens.accent } }, '有更新') : null,
-        entry.updateError ? h('span', { style: { flex: '0 0 auto', fontSize: 11, color: tokens.danger }, title: entry.updateError }, '来源异常') : null,
       ),
       entry.description ? h('p', { style: { margin: 0, color: tokens.secondary, lineHeight: 1.45, fontSize: 12.5 as never, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' } as CSSProperties }, entry.description) : null,
     ),
     h('div', { className: 'dsh-skill-manager-row-actions', style: { gridColumn: '1 / -1', display: 'flex', width: '100%', minWidth: 0, justifyContent: 'flex-end', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
-      h(Toggle, { checked: entry.globalEnabled, disabled: busy, onChange: onGlobalChange, label: `${entry.name} 全局开关`, title: '全局启用' }),
-      projectAvailable ? h(Toggle, { checked: entry.projectEnabled, disabled: busy, onChange: onProjectChange, label: `${entry.name} 项目开关`, title: `${projectLabel} 启用` }) : null,
-      h('button', { type: 'button', style: { ...iconButtonStyle, color: entry.updateAvailable ? tokens.accent : tokens.secondary }, disabled: busy, onClick: onUpdate, title: entry.updateSupported && !entry.updateError ? (entry.sourceType === 'git' ? '从远程仓库更新' : '从原始目录更新') : '选择来源目录并更新', 'aria-label': `更新 ${entry.name}` },
+      h('input', { type: 'checkbox', checked: entry.globalEnabled, disabled: busy, onChange: (event: ChangeEvent<HTMLInputElement>) => onGlobalChange(event.currentTarget.checked), 'aria-label': `${entry.name} 全局开关`, title: '全局启用', style: checkboxStyle }),
+      projectAvailable ? h('input', { type: 'checkbox', checked: entry.projectEnabled, disabled: busy, onChange: (event: ChangeEvent<HTMLInputElement>) => onProjectChange(event.currentTarget.checked), 'aria-label': `${entry.name} 项目开关`, title: `${projectLabel} 启用`, style: checkboxStyle }) : null,
+      h('button', { type: 'button', style: { ...iconButtonStyle, color: tokens.secondary }, disabled: busy, onClick: onUpdate, title: entry.updateSupported ? (entry.sourceType === 'git' ? '从远程仓库更新' : '从原始目录更新') : '选择来源目录并更新', 'aria-label': `更新 ${entry.name}` },
         h(RefreshCw, { size: 15, 'aria-hidden': true })),
       h('button', { type: 'button', style: { ...iconButtonStyle, color: tokens.danger }, disabled: busy, onClick: onRemove, title: '从库中移除', 'aria-label': `移除 ${entry.name}` },
         h(Trash2, { size: 15, 'aria-hidden': true })),
@@ -473,7 +427,7 @@ function SourceBadge(props: { readonly entry: SkillCatalogEntry }): ReturnType<t
   const local = props.entry.sourceType === 'local' || Boolean(props.entry.sourcePath)
   const Icon = remote ? GitBranch : local ? FolderGit : AlertCircle
   const label = remote ? 'Git' : local ? '本机' : '未知'
-  const title = remote ? props.entry.sourceUrl : local ? props.entry.sourcePath : '旧版本导入，首次更新需重新选择来源'
+  const title = remote ? props.entry.sourceUrl : local ? props.entry.sourcePath : '来源未知，更新时需选择本机来源目录'
   return h('span', {
     title,
     style: {
@@ -498,40 +452,6 @@ function StatusBadge(props: { readonly active: boolean; readonly icon: Component
   },
     h(Icon, { size: 11, 'aria-hidden': true }),
     props.active ? `${props.label}开` : `${props.label}关`,
-  )
-}
-
-function Toggle(props: {
-  readonly checked: boolean
-  readonly disabled: boolean
-  readonly onChange: (enabled: boolean) => void
-  readonly label: string
-  readonly title?: string
-}): ReturnType<typeof h> {
-  const { checked, disabled, onChange, label, title } = props
-  return h('button', {
-    type: 'button',
-    role: 'switch',
-    'aria-checked': checked,
-    'aria-label': label,
-    title,
-    disabled,
-    onClick: () => onChange(!checked),
-    style: {
-      position: 'relative', flex: '0 0 auto', width: 30, height: 18, padding: 0, border: 'none', borderRadius: 999,
-      background: checked ? tokens.accent : 'rgba(148, 163, 184, .35)',
-      cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.55 : 1,
-      transition: 'background .15s ease',
-    },
-  },
-    h('span', {
-      'aria-hidden': true,
-      style: {
-        position: 'absolute', top: 2, left: checked ? 14 : 2, width: 14, height: 14, borderRadius: 999,
-        background: '#fff', boxShadow: '0 1px 2px rgba(0, 0, 0, .3)', transition: 'left .15s ease',
-        display: 'grid', placeItems: 'center',
-      },
-    }, checked ? h(Check, { size: 10, 'aria-hidden': true }) : null),
   )
 }
 

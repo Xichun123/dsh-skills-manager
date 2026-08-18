@@ -67,7 +67,7 @@
   },
   "dependencies": {
     "lucide-react": "^1.31.0",
-    "yaml": "^2.4.2"
+    "skills": "^1.5.22"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

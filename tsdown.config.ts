@@ -19,7 +19,7 @@ export default defineConfig([
       '@deepseek-ai/dsh-skill',
       '@deepseek-ai/dsh-skill-filesystem',
       '@deepseek-ai/schemastery',
-      'yaml',
+      'skills',
     ],
   },
   {

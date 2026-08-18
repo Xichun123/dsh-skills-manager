@@ -4,12 +4,10 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
-    "noImplicitAny": true,
     "skipLibCheck": true,
     "declaration": true,
     "outDir": "lib/types",
-    "rootDir": "src",
-    "esModuleInterop": true
+    "rootDir": "src"
   },
   "include": ["src/**/*.ts"]
 }
