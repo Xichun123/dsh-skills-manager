@@ -15,6 +15,7 @@ import type { ClientContext, SessionId, SessionListState, WorkspaceListState } f
 import type { ConnectionHandle, RpcResult } from '@deepseek-ai/dsh-client-connection/client'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SkillCatalog, SkillCatalogEntry } from '../types.js'
+import { projectPopoverEnabledCount, projectPopoverRow } from './popover.js'
 import { projectRootForSession } from './session.js'
 import type {} from '@deepseek-ai/dsh-client-connection/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
@@ -353,7 +354,7 @@ function ProjectSkillPopover(props: ManagerApi & { readonly projectRoot: string;
     finally { setBusy(false) }
   }
 
-  const enabledCount = (catalog?.entries ?? []).filter(entry => entry.projectEnabled).length
+  const enabledCount = projectPopoverEnabledCount(catalog?.entries ?? [])
 
   return h('section', { style: { position: 'absolute', zIndex: 50, left: 0, bottom: 40, width: 320, display: 'grid', gap: 6, padding: 12, border: `1px solid ${tokens.borderStrong}`, borderRadius: 12, background: theme.background, color: theme.color, boxShadow: '0 16px 40px rgba(0, 0, 0, .4)' }, 'aria-label': '当前项目 Skill' },
     h('header', { style: { display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', paddingBottom: 4 } },
@@ -371,11 +372,17 @@ function ProjectSkillPopover(props: ManagerApi & { readonly projectRoot: string;
         ? h('p', { style: { margin: 0, padding: '18px 0', textAlign: 'center', fontSize: 12, color: tokens.secondary } }, '正在读取…')
         : catalog.entries.length === 0
           ? h('p', { style: { margin: 0, padding: '18px 0', textAlign: 'center', fontSize: 12, color: tokens.secondary } }, '未导入 skill。请到「设置 → Skill 管理」导入。')
-          : catalog.entries.map(entry => h('label', { key: entry.name, style: { display: 'grid', gridTemplateColumns: '14px minmax(0, 1fr) 30px', gap: 8, alignItems: 'center', padding: '7px 6px', borderRadius: 7, fontSize: 13, cursor: busy ? 'default' : 'pointer' }, title: entry.description || entry.name },
-            h(Puzzle, { size: 13, 'aria-hidden': true, style: { color: entry.projectEnabled ? tokens.accent : tokens.secondary } }),
-            h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, entry.name),
-            h('input', { type: 'checkbox', checked: entry.projectEnabled, disabled: busy, onChange: (event: ChangeEvent<HTMLInputElement>) => void toggle(entry, event.currentTarget.checked), 'aria-label': `${entry.name} 项目开关`, style: checkboxStyle }),
-          )),
+          : catalog.entries.map(entry => {
+            const row = projectPopoverRow(entry, busy)
+            return h('label', { key: entry.name, style: { display: 'grid', gridTemplateColumns: '14px minmax(0, 1fr) 30px', gap: 8, alignItems: 'center', padding: '7px 6px', borderRadius: 7, fontSize: 13, cursor: row.disabled ? 'default' : 'pointer' }, title: entry.description || entry.name },
+              h(Puzzle, { size: 13, 'aria-hidden': true, style: { color: entry.effectiveEnabled ? tokens.accent : tokens.secondary } }),
+              h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } },
+                h('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, entry.name),
+                row.badge ? h(StatusBadge, { active: true, icon: Globe, label: row.badge }) : null,
+              ),
+              h('input', { type: 'checkbox', checked: row.checked, disabled: row.disabled, onChange: (event: ChangeEvent<HTMLInputElement>) => void toggle(entry, event.currentTarget.checked), 'aria-label': `${entry.name} 项目开关`, title: row.checkboxTitle, style: checkboxStyle }),
+            )
+          }),
     ),
     busy ? h('div', { style: { display: 'flex', justifyContent: 'flex-end', paddingTop: 2 } }, h(RefreshCw, { size: 12, 'aria-hidden': true, style: spinnerStyle })) : null,
   )
