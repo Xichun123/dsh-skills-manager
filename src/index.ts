@@ -176,10 +176,12 @@ export class SkillManager {
         for (const [name] of items) report.push({ name, status: statuses[name] ?? 'unknown' })
       }
       if (first.sourceType === 'local') {
+        // The CLI stores portable relative sources; they resolve against the lock file's directory.
+        const sourceRoot = isAbsolute(source) ? source : resolve(this.root, source)
         const statuses: Record<string, SkillUpdateStatus> = {}
         for (const [name] of items) {
           const [sourceHash, installedHash] = await Promise.all([
-            computeSkillFolderHash(join(source, name)).catch(() => undefined),
+            computeSkillFolderHash(join(sourceRoot, name)).catch(() => undefined),
             computeSkillFolderHash(join(this.library, name)).catch(() => undefined),
           ])
           statuses[name] = sourceHash === undefined ? 'unknown' : sourceHash === installedHash ? 'current' : 'update-available'
