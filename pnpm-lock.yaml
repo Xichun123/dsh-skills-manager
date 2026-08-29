@@ -8,9 +8,6 @@ importers:
 
   .:
     dependencies:
-      lucide-react:
-        specifier: ^1.31.0
-        version: 1.31.0(react@18.3.1)
       skills:
         specifier: ^1.5.22
         version: 1.5.22
@@ -51,6 +48,9 @@ importers:
       '@types/react':
         specifier: ~18.3.1
         version: 18.3.31
+      lucide-react:
+        specifier: ^1.31.0
+        version: 1.31.0(react@18.3.1)
       react:
         specifier: ^18.2.0
         version: 18.3.1
