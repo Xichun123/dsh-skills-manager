@@ -27,3 +27,14 @@ export interface SkillCatalogEntry {
 export interface SkillCatalog {
   readonly entries: readonly SkillCatalogEntry[]
 }
+
+export type SkillUpdateStatus = 'update-available' | 'current' | 'deleted-upstream' | 'unknown'
+
+export interface SkillUpdateReportEntry {
+  readonly name: string
+  readonly status: SkillUpdateStatus
+}
+
+export interface SkillUpdateReport {
+  readonly entries: readonly SkillUpdateReportEntry[]
+}

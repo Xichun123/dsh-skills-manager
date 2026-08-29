@@ -149,6 +149,42 @@ test('rejects local symlinks that escape the source root', async (context) => {
   await assert.rejects(manager.install(source), /broken or escaping symlink/)
 })
 
+test('checks local and git sources for updates without applying them', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skill-manager-check-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+
+  const localSkill = join(root, 'source', 'alpha')
+  const storageDir = join(root, 'storage')
+  await mkdir(localSkill, { recursive: true })
+  await writeFile(join(localSkill, 'SKILL.md'), skillMarkdown('Local one', 'Version one.'), 'utf8')
+
+  const repository = join(root, 'repository')
+  const gitSkill = join(repository, 'skills', 'beta')
+  await mkdir(gitSkill, { recursive: true })
+  await execFileAsync('git', ['init', repository])
+  await execFileAsync('git', ['-C', repository, 'config', 'user.email', 'test@example.com'])
+  await execFileAsync('git', ['-C', repository, 'config', 'user.name', 'Skill Manager Test'])
+  await writeFile(join(gitSkill, 'SKILL.md'), `---\nname: beta\ndescription: Git one\n---\n\nVersion one.\n`, 'utf8')
+  await execFileAsync('git', ['-C', repository, 'add', '.'])
+  await execFileAsync('git', ['-C', repository, 'commit', '-m', 'initial'])
+
+  const manager = new SkillManager(hostContext, { storageDir })
+  await manager.install(join(root, 'source'))
+  await manager.installRemote(pathToFileURL(repository).href)
+
+  const statusOf = async () => Object.fromEntries((await manager.checkUpdates()).entries.map(entry => [entry.name, entry.status]))
+  assert.deepEqual(await statusOf(), { alpha: 'current', beta: 'current' })
+
+  await writeFile(join(localSkill, 'SKILL.md'), skillMarkdown('Local two', 'Version two.'), 'utf8')
+  await writeFile(join(gitSkill, 'SKILL.md'), `---\nname: beta\ndescription: Git two\n---\n\nVersion two.\n`, 'utf8')
+  await execFileAsync('git', ['-C', repository, 'add', '.'])
+  await execFileAsync('git', ['-C', repository, 'commit', '-m', 'update'])
+
+  assert.deepEqual(await statusOf(), { alpha: 'update-available', beta: 'update-available' })
+  // Detection never applies the update.
+  assert.equal(await readFile(join(storageDir, '.agents', 'skills', 'alpha', 'SKILL.md'), 'utf8'), skillMarkdown('Local one', 'Version one.'))
+})
+
 test('rejects credentials embedded in repository URLs', async (context) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-skill-manager-security-'))
   context.after(() => rm(root, { recursive: true, force: true }))

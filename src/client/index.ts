@@ -18,7 +18,7 @@ import ChevronRight from 'lucide-react/dist/esm/icons/chevron-right.mjs'
 import type { ClientContext, SessionId, SessionListState, WorkspaceListState } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ConnectionHandle, RpcResult } from '@deepseek-ai/dsh-client-connection/client'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SkillCatalog, SkillCatalogEntry } from '../types.js'
+import type { SkillCatalog, SkillCatalogEntry, SkillUpdateReport, SkillUpdateStatus } from '../types.js'
 import { projectPopoverEnabledCount, projectPopoverRow } from './popover.js'
 import { projectRootForSession } from './session.js'
 import type {} from '@deepseek-ai/dsh-client-connection/client'
@@ -33,6 +33,7 @@ interface ManagerApi {
 }
 
 interface SectionProps extends ManagerApi {
+  readonly checkUpdates: () => Promise<SkillUpdateReport>
   readonly pickDirectory: () => Promise<string | null>
   readonly loopback: boolean
   readonly useWorkspaces: SnapshotSelectorHook<WorkspaceListState>
@@ -124,13 +125,18 @@ export function apply(ctx: ClientContext): void {
   }
   const list = (projectRoot?: string): Promise<SkillCatalog> => request('list', projectRoot ? { projectRoot } : {})
   const mutate = request
+  const checkUpdates = async (): Promise<SkillUpdateReport> => {
+    const result = await connection.rpc.call('/skill-manager', 'check-updates', {}) as RpcResult<SkillUpdateReport>
+    if (!result.ok) throw new Error(result.error.message)
+    return result.value
+  }
 
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'skills',
     order: 35,
     label: 'Skill 管理',
-    inject: () => ({ list, mutate, pickDirectory: () => ctx.workspaces.pickDirectory(), loopback: connection.isLoopback }),
+    inject: () => ({ list, mutate, checkUpdates, pickDirectory: () => ctx.workspaces.pickDirectory(), loopback: connection.isLoopback }),
   }, SkillManagerSection as never))
 
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
@@ -142,12 +148,14 @@ export function apply(ctx: ClientContext): void {
 }
 
 function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
-  const { list, mutate, pickDirectory, loopback, useWorkspaces } = props
+  const { list, mutate, checkUpdates, pickDirectory, loopback, useWorkspaces } = props
   const workspaces = useWorkspaces(state => state)
   const [projectRoot, setProjectRoot] = useState<string | undefined>(undefined)
   const [catalog, setCatalog] = useState<SkillCatalog | null>(null)
   const [query, setQuery] = useState('')
   const [busy, setBusy] = useState(false)
+  const [checking, setChecking] = useState(false)
+  const [statuses, setStatuses] = useState<Readonly<Record<string, SkillUpdateStatus>>>({})
   const [error, setError] = useState<string | null>(null)
   const [repositoryOpen, setRepositoryOpen] = useState(false)
   const [repository, setRepository] = useState('')
@@ -214,6 +222,34 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
     await run(() => mutate('update', { name: entry.name, path, projectRoot }))
   }
 
+  const checkAll = async () => {
+    setChecking(true)
+    setError(null)
+    try {
+      const report = await checkUpdates()
+      setStatuses(Object.fromEntries(report.entries.map(entry => [entry.name, entry.status])))
+    } catch (reason) {
+      setError(messageOf(reason))
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const updatable = (catalog?.entries ?? []).filter(entry => statuses[entry.name] === 'update-available' && entry.updateSupported)
+
+  const updateAll = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      for (const entry of updatable) setCatalog(await mutate('update', { name: entry.name, projectRoot }))
+      setStatuses({})
+    } catch (reason) {
+      setError(messageOf(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const selectedWorkspace = workspaces.items.find(item => item.path === projectRoot)
   const rowProps = (entry: SkillCatalogEntry) => ({
     key: entry.name,
@@ -221,6 +257,7 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
     projectLabel: selectedWorkspace?.title ?? '当前项目',
     projectAvailable: projectRoot !== undefined,
     busy,
+    updateStatus: statuses[entry.name],
     onGlobalChange: (enabled: boolean) => void run(() => mutate('set-enabled', { name: entry.name, scope: 'global', projectRoot, enabled })),
     onProjectChange: (enabled: boolean) => void run(() => mutate('set-enabled', { name: entry.name, scope: 'project', projectRoot, enabled })),
     onUpdate: () => void updateSkill(entry),
@@ -234,6 +271,10 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
         busy ? h(RefreshCw, { size: 14, 'aria-hidden': true, style: spinnerStyle }) : null,
       ),
       h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
+        h('button', { type: 'button', style: buttonStyle('ghost', busy || checking), onClick: () => void checkAll(), disabled: busy || checking, title: '检测全部 skill 是否有更新（只检测，不更新）' },
+          h(RefreshCw, { size: 14, 'aria-hidden': true, style: checking ? spinnerStyle : undefined }), checking ? '检测中…' : '检测'),
+        updatable.length > 0 ? h('button', { type: 'button', style: buttonStyle('primary', busy || checking || !loopback), onClick: () => void updateAll(), disabled: busy || checking || !loopback, title: loopback ? `更新全部 ${updatable.length} 个有更新的 skill` : '仅在本机连接时可更新' },
+          h(RefreshCw, { size: 14, 'aria-hidden': true }), `全部更新 (${updatable.length})`) : null,
         h('button', { type: 'button', style: buttonStyle('ghost', busy || !loopback), onClick: () => setRepositoryOpen(value => !value), disabled: busy || !loopback, title: loopback ? '从 Git 仓库导入 skill' : '仅在本机连接时可导入' },
           h(GitBranch, { size: 14, 'aria-hidden': true }), '仓库'),
         h('button', { type: 'button', style: buttonStyle('primary', busy || !loopback), onClick: importSkill, disabled: busy || !loopback, title: loopback ? '从本机目录导入 skill' : '仅在本机连接时可导入' },
@@ -442,17 +483,26 @@ function ProjectSkillPopover(props: ManagerApi & { readonly projectRoot: string;
   )
 }
 
+const UPDATE_BADGE: Readonly<Record<SkillUpdateStatus, { label: string; color: string; background: string; border: string }>> = {
+  'update-available': { label: '有更新', color: tokens.accent, background: 'rgba(99, 102, 241, .1)', border: '1px solid rgba(99, 102, 241, .35)' },
+  'current': { label: '已是最新', color: tokens.success, background: 'rgba(22, 163, 74, .1)', border: '1px solid rgba(22, 163, 74, .3)' },
+  'deleted-upstream': { label: '上游已删除', color: tokens.danger, background: 'rgba(220, 38, 38, .08)', border: '1px solid rgba(220, 38, 38, .3)' },
+  'unknown': { label: '无法检测', color: tokens.secondary, background: 'rgba(148, 163, 184, .09)', border: '1px solid transparent' },
+}
+
 function SkillRow(props: {
   readonly entry: SkillCatalogEntry
   readonly projectLabel: string
   readonly projectAvailable: boolean
   readonly busy: boolean
+  readonly updateStatus?: SkillUpdateStatus
   readonly onGlobalChange: (enabled: boolean) => void
   readonly onProjectChange: (enabled: boolean) => void
   readonly onUpdate: () => void
   readonly onRemove: () => void
 }): ReturnType<typeof h> {
-  const { entry, projectLabel, projectAvailable, busy, onGlobalChange, onProjectChange, onUpdate, onRemove } = props
+  const { entry, projectLabel, projectAvailable, busy, updateStatus, onGlobalChange, onProjectChange, onUpdate, onRemove } = props
+  const badge = updateStatus ? UPDATE_BADGE[updateStatus] : undefined
   return h('article', {
     className: 'dsh-skill-manager-row',
     style: {
@@ -468,6 +518,7 @@ function SkillRow(props: {
     h('div', { style: { minWidth: 0, display: 'grid', gap: 4 } },
       h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexWrap: 'wrap' } },
         h('strong', { style: { ...monoStyle, fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, entry.name),
+        badge ? h('span', { style: { display: 'inline-flex', alignItems: 'center', flex: '0 1 auto', padding: '2px 6px', borderRadius: 999, fontSize: 11, lineHeight: '16px', whiteSpace: 'nowrap', color: badge.color, background: badge.background, border: badge.border } }, badge.label) : null,
         h(SourceBadge, { entry }),
         h(StatusBadge, { active: entry.globalEnabled, icon: Globe, label: '全局' }),
         projectAvailable ? h(StatusBadge, { active: entry.projectEnabled, icon: FolderGit, label: projectLabel }) : null,

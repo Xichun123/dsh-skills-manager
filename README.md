@@ -33,8 +33,9 @@ After changing the bundle or installed dependencies, restart the Harness service
 2. Choose **本机** to select a local skill folder, or **仓库** to enter a GitHub `owner/repo`, HTTPS URL, SSH URL, or other Git URL.
 3. Enable **全局** or select a workspace and enable **项目**.
 4. Use the refresh icon on a row to reinstall that skill from the source recorded in `skills-lock.json`.
-5. Use the wrench control beside the composer attachment button to toggle installed skills for the current session workspace only.
-6. Remove an installed skill with **移除**. This deletes only the plugin's private library entry, not the local source or remote repository.
+5. Use **检测** to check every installed skill for upstream updates without applying them; rows show a badge (有更新 / 已是最新 / 上游已删除 / 无法检测). When updates are found, **全部更新 (N)** applies them one by one.
+6. Use the wrench control beside the composer attachment button to toggle installed skills for the current session workspace only.
+7. Remove an installed skill with **移除**. This deletes only the plugin's private library entry, not the local source or remote repository.
 
 Repository imports and refreshes are delegated to the `skills` CLI. It supports GitHub `owner/repo`, HTTPS, SSH, Git and file URLs, and reuses the machine's existing Git credential helper or SSH configuration. Do not put credentials in repository URLs; the plugin rejects embedded credentials before invoking the CLI.
 

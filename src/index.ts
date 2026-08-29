@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { execFile } from 'node:child_process'
 import { createRequire } from 'node:module'
@@ -12,7 +12,7 @@ import { FileSystemSkillProvider } from '@deepseek-ai/dsh-skill-filesystem'
 import type { SkillCandidate, SkillLookupOptions, SkillProvider, SkillProviderControl } from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import { EMPTY_STATE, isEnabledFor, isPathWithin, normalizeState, removeSkill, setEnabled } from './state.js'
-import type { ManagerState, SkillCatalog, SkillCatalogEntry, SkillOrigin, SkillScope } from './types.js'
+import type { ManagerState, SkillCatalog, SkillCatalogEntry, SkillOrigin, SkillScope, SkillUpdateReport, SkillUpdateReportEntry, SkillUpdateStatus } from './types.js'
 
 export const name = 'dsh-skills-manager'
 export const inject = ['skills', 'connection']
@@ -143,6 +143,77 @@ export class SkillManager {
     await this.runSkills('update', ['add', origin.source, '--skill', name, '--agent', 'universal', '--yes'])
     this.providerControl?.invalidate()
     return this.catalog(projectRoot)
+  }
+
+  // ponytail: sources are checked sequentially to keep git/fetch usage trivial; parallelize per-source if checks feel slow
+  async checkUpdates(): Promise<SkillUpdateReport> {
+    await this.loaded
+    interface LockEntry {
+      readonly source?: string
+      readonly sourceType?: string
+      readonly sourceUrl?: string
+      readonly ref?: string
+      readonly skillPath?: string
+      readonly computedHash?: string
+    }
+    let lockSkills: Readonly<Record<string, LockEntry>>
+    try {
+      lockSkills = (JSON.parse(await readFile(join(this.root, 'skills-lock.json'), 'utf8')) as { skills?: Record<string, LockEntry> }).skills ?? {}
+    } catch {
+      return { entries: [] }
+    }
+    const installed = new Set((await this.libraryCandidates({})).map(candidate => candidate.name))
+    const entries = Object.entries(lockSkills).filter(([name]) => installed.has(name))
+    const bySource = new Map<string, Array<[string, LockEntry]>>()
+    for (const item of entries) {
+      const source = item[1].source ?? ''
+      bySource.set(source, [...bySource.get(source) ?? [], item])
+    }
+    const report: SkillUpdateReportEntry[] = []
+    for (const [source, items] of bySource) {
+      const first = items[0][1]
+      const apply = (statuses: Readonly<Record<string, SkillUpdateStatus>>) => {
+        for (const [name] of items) report.push({ name, status: statuses[name] ?? 'unknown' })
+      }
+      if (first.sourceType === 'local') {
+        const statuses: Record<string, SkillUpdateStatus> = {}
+        for (const [name] of items) {
+          const [sourceHash, installedHash] = await Promise.all([
+            computeSkillFolderHash(join(source, name)).catch(() => undefined),
+            computeSkillFolderHash(join(this.library, name)).catch(() => undefined),
+          ])
+          statuses[name] = sourceHash === undefined ? 'unknown' : sourceHash === installedHash ? 'current' : 'update-available'
+        }
+        apply(statuses)
+        continue
+      }
+      if (first.sourceType === 'github' || first.sourceType === 'git' || first.sourceType === 'gitlab') {
+        if (!first.skillPath) { apply({}); continue }
+        // ponytail: always shallow-clone and compare content hashes. The CLI's project lock stores content
+        // hashes even for github sources, so the GitHub tree API (tree SHAs) is not comparable to it.
+        const url = first.sourceUrl || source
+        let latest: LatestHashes | undefined
+        try {
+          latest = await computeLatestHashesFromGit(url, first.ref, items.map(([, entry]) => entry.skillPath!))
+        } catch {
+          apply({})
+          continue
+        }
+        const statuses: Record<string, SkillUpdateStatus> = {}
+        for (const [name, entry] of items) {
+          if (!latest.paths.has(entry.skillPath!)) { statuses[name] = 'deleted-upstream'; continue }
+          const remote = latest.hashes.get(entry.skillPath!)
+          if (!remote) { statuses[name] = 'unknown'; continue }
+          // Compare against the installed copy so locally-diverged installs show as updatable.
+          const installed = await computeSkillFolderHash(join(this.library, name)).catch(() => undefined)
+          statuses[name] = installed === undefined ? 'unknown' : installed === remote ? 'current' : 'update-available'
+        }
+        apply(statuses)
+        continue
+      }
+      apply({})
+    }
+    return { entries: report.sort((a, b) => a.name.localeCompare(b.name)) }
   }
 
   async setEnabled(name: string, scope: SkillScope, projectRoot: string | undefined, enabled: boolean): Promise<SkillCatalog> {
@@ -283,6 +354,8 @@ async function handleRpc(manager: SkillManager, endpoint: string, payload: unkno
       }
     case 'remove':
       return { ok: true as const, value: await manager.remove(requiredString(args.name, 'name'), asOptionalString(args.projectRoot)) }
+    case 'check-updates':
+      return { ok: true as const, value: await manager.checkUpdates() }
     default:
       throw new Error(`unknown skill-manager endpoint: ${endpoint}`)
   }
@@ -419,4 +492,68 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNodeError(value: unknown): value is NodeJS.ErrnoException {
   return value instanceof Error && 'code' in value
+}
+
+interface LatestHashes {
+  readonly paths: ReadonlySet<string>
+  readonly hashes: ReadonlyMap<string, string>
+}
+
+// Same algorithm as the skills CLI: sha256 over sorted "relativePath + content" of every file below the skill folder.
+async function computeSkillFolderHash(skillDir: string): Promise<string> {
+  const files: Array<{ relativePath: string; content: Buffer }> = []
+  const collect = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (entry.name === '.git' || entry.name === 'node_modules') continue
+      const fullPath = join(directory, entry.name)
+      if (entry.isDirectory()) await collect(fullPath)
+      else if (entry.isFile()) files.push({ relativePath: relative(skillDir, fullPath).split(sep).join('/'), content: await readFile(fullPath) })
+    }
+  }
+  await collect(skillDir)
+  files.sort((a, b) => a.relativePath.localeCompare(b.relativePath))
+  const hash = createHash('sha256')
+  for (const file of files) {
+    hash.update(file.relativePath)
+    hash.update(file.content)
+  }
+  return hash.digest('hex')
+}
+
+function skillFolderFromPath(skillPath: string): string {
+  let folder = skillPath.replace(/\\/g, '/')
+  if (folder.toLowerCase().endsWith('/skill.md')) folder = folder.slice(0, -'/skill.md'.length)
+  else if (folder.toLowerCase().endsWith('skill.md')) folder = folder.slice(0, -'skill.md'.length)
+  return folder.endsWith('/') ? folder.slice(0, -1) : folder
+}
+
+// Mirror the CLI's update check: shallow clone the source and hash the skill folders.
+async function computeLatestHashesFromGit(url: string, ref: string | undefined, skillPaths: readonly string[]): Promise<LatestHashes> {
+  const temporaryRoot = await mkdtemp(join(tmpdir(), 'dsh-skill-manager-check-'))
+  try {
+    await execFileAsync('git', ['clone', '--depth', '1', '--no-recurse-submodules', ...ref ? ['--branch', ref] : [], preflightRepositorySource(url), join(temporaryRoot, 'repo')], {
+      timeout: 120_000,
+      maxBuffer: 4 * 1024 * 1024,
+    })
+    const repo = join(temporaryRoot, 'repo')
+    const paths = new Set<string>()
+    const walk = async (directory: string): Promise<void> => {
+      for (const entry of await readdir(directory, { withFileTypes: true })) {
+        if (entry.name === '.git') continue
+        const fullPath = join(directory, entry.name)
+        if (entry.isDirectory()) await walk(fullPath)
+        else if (entry.isFile()) paths.add(relative(repo, fullPath).split(sep).join('/'))
+      }
+    }
+    await walk(repo)
+    const hashes = new Map<string, string>()
+    for (const skillPath of skillPaths) {
+      if (!paths.has(skillPath)) continue
+      const folder = join(repo, skillFolderFromPath(skillPath))
+      hashes.set(skillPath, await computeSkillFolderHash(folder).catch(() => ''))
+    }
+    return { paths, hashes }
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true })
+  }
 }
