@@ -233,6 +233,12 @@ export class SkillManager {
         for (const [name, entry] of items) {
           const remote = latest.hashes.get(entry.skillPath!)
           if (remote === undefined) { statuses[name] = 'deleted-upstream'; continue }
+          // The lock's hash records upstream at install time. For repos whose skillPath is the
+          // repo root (e.g. iOfficeAI/OfficeCLI), the installed copy legitimately diverges from the
+          // whole-repo hash (the CLI's copy drops .git and may nest skills/<name>/ duplicates), so
+          // trust lock-vs-remote first: equal means nothing new upstream — installed drift is then
+          // local noise, not an update.
+          if (entry.computedHash !== undefined && entry.computedHash === remote) { statuses[name] = 'current'; continue }
           // Compare against the installed copy so locally-diverged installs show as updatable.
           const installed = await computeSkillFolderHash(join(this.library, name)).catch(() => undefined)
           statuses[name] = installed === undefined ? 'unknown' : installed === remote ? 'current' : 'update-available'
