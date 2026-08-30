@@ -22,10 +22,22 @@ export interface SkillCatalogEntry {
   readonly projectEnabled: boolean
   readonly effectiveEnabled: boolean
   readonly updateSupported: boolean
+  /** Whether the model-facing catalog includes this skill (frontmatter disable-model-invocation). */
+  readonly modelInvocable?: boolean
 }
 
 export interface SkillCatalog {
   readonly entries: readonly SkillCatalogEntry[]
+}
+
+/** One installable skill discovered in a not-yet-installed source. */
+export interface SkillInspectEntry {
+  readonly name: string
+  readonly description: string
+}
+
+export interface SkillInspectResult {
+  readonly entries: readonly SkillInspectEntry[]
 }
 
 export type SkillUpdateStatus = 'update-available' | 'current' | 'deleted-upstream' | 'unknown'

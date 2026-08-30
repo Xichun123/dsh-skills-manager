@@ -12,7 +12,7 @@ import { FileSystemSkillProvider } from '@deepseek-ai/dsh-skill-filesystem'
 import type { SkillCandidate, SkillLookupOptions, SkillProvider, SkillProviderControl } from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import { EMPTY_STATE, isRecord, isEnabledFor, isPathWithin, normalizeState, removeSkill, setEnabled } from './state.js'
-import type { ManagerState, SkillCatalog, SkillCatalogEntry, SkillOrigin, SkillScope, SkillUpdateReport, SkillUpdateReportEntry, SkillUpdateStatus } from './types.js'
+import type { ManagerState, SkillCatalog, SkillCatalogEntry, SkillInspectEntry, SkillInspectResult, SkillOrigin, SkillScope, SkillUpdateReport, SkillUpdateReportEntry, SkillUpdateStatus } from './types.js'
 
 export const name = 'dsh-skills-manager'
 export const inject = ['skills', 'connection']
@@ -110,26 +110,47 @@ export class SkillManager {
           projectEnabled: projectRoot !== undefined && (this.state.projectEnabled[projectRoot] ?? []).includes(candidate.name),
           effectiveEnabled: isEnabledFor(this.state, candidate.name, projectRoot),
           updateSupported: origin !== undefined,
+          modelInvocable: candidate.invocation?.modelInvocable,
         }
       })
     return { entries }
   }
 
-  async install(sourcePath: string, projectRoot?: string): Promise<SkillCatalog> {
+  /** Dry-run a source: what skills it offers, without installing anything. */
+  async inspect(sourcePath: string): Promise<SkillInspectResult> {
     await this.loaded
     const source = resolve(sourcePath.trim())
     if (!await isDirectory(source)) throw new Error('skill source must be a directory containing SKILL.md bundles')
-    return this.installSource(source, projectRoot, 'local')
+    return this.inspectSource(source, 'local')
   }
 
-  async installRemote(input: string, projectRoot?: string): Promise<SkillCatalog> {
+  async inspectRemote(input: string): Promise<SkillInspectResult> {
     await this.loaded
-    return this.installSource(repositorySource(input), projectRoot, 'git')
+    return this.inspectSource(repositorySource(input), 'git')
   }
 
-  private async installSource(source: string, projectRoot: string | undefined, sourceType: 'local' | 'git'): Promise<SkillCatalog> {
+  private async inspectSource(source: string, sourceType: 'local' | 'git'): Promise<SkillInspectResult> {
     await validateSource(source, sourceType)
-    await this.runSkills('install', ['add', source, '--skill', '*', '--agent', 'universal', '--yes'])
+    const output = await this.runSkills('inspect', ['add', source, '--skill', '*', '--agent', 'universal', '--yes', '--list'])
+    return { entries: parseListOutput(output) }
+  }
+
+  async install(sourcePath: string, skills: readonly string[] | undefined, projectRoot?: string): Promise<SkillCatalog> {
+    await this.loaded
+    const source = resolve(sourcePath.trim())
+    if (!await isDirectory(source)) throw new Error('skill source must be a directory containing SKILL.md bundles')
+    return this.installSource(source, skills, projectRoot, 'local')
+  }
+
+  async installRemote(input: string, skills: readonly string[] | undefined, projectRoot?: string): Promise<SkillCatalog> {
+    await this.loaded
+    return this.installSource(repositorySource(input), skills, projectRoot, 'git')
+  }
+
+  private async installSource(source: string, skills: readonly string[] | undefined, projectRoot: string | undefined, sourceType: 'local' | 'git'): Promise<SkillCatalog> {
+    await validateSource(source, sourceType)
+    const selection = skills !== undefined && skills.length > 0 ? skills.flatMap(name => ['--skill', name]) : ['--skill', '*']
+    await this.runSkills('install', ['add', source, ...selection, '--agent', 'universal', '--yes'])
     this.providerControl?.invalidate()
     return this.catalog(projectRoot)
   }
@@ -330,10 +351,14 @@ async function handleRpc(manager: SkillManager, endpoint: string, payload: unkno
   switch (endpoint) {
     case 'list':
       return { ok: true as const, value: await manager.catalog(asOptionalString(args.projectRoot)) }
+    case 'inspect':
+      return { ok: true as const, value: await manager.inspect(requiredString(args.path, 'path')) }
+    case 'inspect-remote':
+      return { ok: true as const, value: await manager.inspectRemote(requiredString(args.repository, 'repository')) }
     case 'install':
-      return { ok: true as const, value: await manager.install(requiredString(args.path, 'path'), asOptionalString(args.projectRoot)) }
+      return { ok: true as const, value: await manager.install(requiredString(args.path, 'path'), asOptionalStringArray(args.skills), asOptionalString(args.projectRoot)) }
     case 'install-remote':
-      return { ok: true as const, value: await manager.installRemote(requiredString(args.repository, 'repository'), asOptionalString(args.projectRoot)) }
+      return { ok: true as const, value: await manager.installRemote(requiredString(args.repository, 'repository'), asOptionalStringArray(args.skills), asOptionalString(args.projectRoot)) }
     case 'update':
       return {
         ok: true as const,
@@ -465,6 +490,12 @@ function asOptionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
+function asOptionalStringArray(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const names = value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map(item => item.trim())
+  return names.length > 0 ? names : undefined
+}
+
 function requiredBoolean(value: unknown, field: string): boolean {
   if (typeof value !== 'boolean') throw new Error(`${field} must be boolean`)
   return value
@@ -477,6 +508,37 @@ function requiredScope(value: unknown): SkillScope {
 
 function isNodeError(value: unknown): value is NodeJS.ErrnoException {
   return value instanceof Error && 'code' in value
+}
+
+// ponytail: the CLI's --list has no JSON mode; parse its fixed "name / indented description"
+// human format. Ceiling: a CLI redesign of that layout breaks this — switch to a JSON flag if
+// the skills CLI ever grows one.
+// ponytail: the CLI's --list has no JSON mode; parse its fixed human format
+// (box-drawn lines "│    name" / "│      description"). Ceiling: a CLI redesign
+// of that layout breaks this — switch to a JSON flag if the skills CLI grows one.
+function parseListOutput(output: string): SkillInspectEntry[] {
+  const lines = output
+    .replace(/\x1b\[[?0-9]*[a-zA-Z]/g, '')
+    .split(/\r?\n/)
+    .map(line => line.replace(/^[│◇└\s]+/, ''))
+  const start = lines.findIndex(line => line === 'Available Skills')
+  if (start === -1) return []
+  const entries: SkillInspectEntry[] = []
+  let current: SkillInspectEntry | undefined
+  for (const line of lines.slice(start + 1)) {
+    if (/^Use --skill/.test(line)) break
+    if (line === '') continue
+    if (current !== undefined && current.description === '' && !/^\S+$/.test(line)) {
+      current = { name: current.name, description: line.trim() }
+      continue
+    }
+    if (/^\S+$/.test(line)) {
+      if (current !== undefined) entries.push(current)
+      current = { name: line, description: '' }
+    }
+  }
+  if (current !== undefined) entries.push(current)
+  return entries
 }
 
 interface LatestHashes {

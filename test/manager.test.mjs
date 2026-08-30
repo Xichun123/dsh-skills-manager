@@ -14,8 +14,8 @@ const hostContext = {
   logger: { warn: () => undefined },
 }
 
-function skillMarkdown(description, body) {
-  return `---\nname: alpha\ndescription: ${description}\n---\n\n${body}\n`
+function skillMarkdown(description, body, name = 'alpha') {
+  return `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`
 }
 
 test('updates a tracked skill without losing enabled scopes', async (context) => {
@@ -30,7 +30,7 @@ test('updates a tracked skill without losing enabled scopes', async (context) =>
   await writeFile(join(source, 'reference.txt'), 'one\n', 'utf8')
 
   const manager = new SkillManager(hostContext, { storageDir })
-  let catalog = await manager.install(source, projectRoot)
+  let catalog = await manager.install(source, undefined, projectRoot)
   assert.equal(catalog.entries[0].updateSupported, true)
   assert.equal(catalog.entries[0].sourceType, 'local')
   assert.equal(catalog.entries[0].sourcePath, source)
@@ -88,7 +88,7 @@ test('imports and updates skills from a Git repository', async (context) => {
   await execFileAsync('git', ['-C', repository, 'commit', '-m', 'initial'])
 
   const manager = new SkillManager(hostContext, { storageDir })
-  let catalog = await manager.installRemote(pathToFileURL(repository).href, projectRoot)
+  let catalog = await manager.installRemote(pathToFileURL(repository).href, undefined, projectRoot)
   assert.equal(catalog.entries[0].sourceType, 'git')
   assert.equal(catalog.entries[0].sourceUrl, pathToFileURL(repository).href)
   await manager.setEnabled('alpha', 'global', projectRoot, true)
@@ -114,6 +114,43 @@ test('rejects flat Markdown skill sources', async (context) => {
 
   const manager = new SkillManager(hostContext, { storageDir: join(root, 'storage') })
   await assert.rejects(manager.install(source), /skills CLI failed to install/)
+})
+
+test('inspects a source without installing, then installs a selection', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skill-manager-select-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+
+  const source = join(root, 'source')
+  await mkdir(join(source, 'alpha'), { recursive: true })
+  await mkdir(join(source, 'beta'), { recursive: true })
+  await writeFile(join(source, 'alpha', 'SKILL.md'), skillMarkdown('Alpha description', 'Alpha body.', 'alpha'), 'utf8')
+  await writeFile(join(source, 'beta', 'SKILL.md'), skillMarkdown('Beta description', 'Beta body.', 'beta'), 'utf8')
+
+  const manager = new SkillManager(hostContext, { storageDir: join(root, 'storage') })
+
+  const inspected = await manager.inspect(source)
+  assert.deepEqual(inspected.entries.map(entry => entry.name), ['alpha', 'beta'])
+  assert.equal(inspected.entries[0].description, 'Alpha description')
+  // Inspect must not install anything.
+  assert.equal((await manager.catalog()).entries.length, 0)
+
+  const catalog = await manager.install(source, ['beta'])
+  assert.deepEqual(catalog.entries.map(entry => entry.name), ['beta'])
+  assert.equal(await readFile(join(root, 'storage', '.agents', 'skills', 'beta', 'SKILL.md'), 'utf8').catch(() => 'missing') !== 'missing', true)
+  await assert.rejects(readFile(join(root, 'storage', '.agents', 'skills', 'alpha', 'SKILL.md'), 'utf8'), /ENOENT/)
+})
+
+test('exposes the model-invocation policy on catalog entries', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skill-manager-invocation-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+
+  const source = join(root, 'source', 'alpha')
+  await mkdir(source, { recursive: true })
+  await writeFile(join(source, 'SKILL.md'), `---\nname: alpha\ndescription: Manual only.\ndisable-model-invocation: true\n---\n\nBody.\n`, 'utf8')
+
+  const manager = new SkillManager(hostContext, { storageDir: join(root, 'storage') })
+  const catalog = await manager.install(source, undefined)
+  assert.equal(catalog.entries[0].modelInvocable, false)
 })
 
 test('rejects repository symlinks that escape the source root', async (context) => {

@@ -15,7 +15,7 @@ import AlertCircle from 'lucide-react/dist/esm/icons/alert-circle.mjs'
 import type { ClientContext, SessionId, SessionListState, WorkspaceListState } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ConnectionHandle, RpcResult } from '@deepseek-ai/dsh-client-connection/client'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
-import type { SkillCatalog, SkillCatalogEntry, SkillUpdateReport, SkillUpdateStatus } from '../types.js'
+import type { SkillCatalog, SkillCatalogEntry, SkillInspectEntry, SkillInspectResult, SkillUpdateReport, SkillUpdateStatus } from '../types.js'
 import { projectPopoverEnabledCount, projectPopoverRow } from './popover.js'
 import type {} from '@deepseek-ai/dsh-client-connection/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
@@ -26,6 +26,8 @@ export const inject = ['connection', 'slots', 'workspaces']
 interface ManagerApi {
   readonly list: (projectRoot?: string) => Promise<SkillCatalog>
   readonly mutate: (endpoint: string, payload: Record<string, unknown>) => Promise<SkillCatalog>
+  readonly inspect: (path: string) => Promise<SkillInspectResult>
+  readonly inspectRemote: (repository: string) => Promise<SkillInspectResult>
 }
 
 interface SectionProps extends ManagerApi {
@@ -121,6 +123,8 @@ export function apply(ctx: ClientContext): void {
   }
   const list = (projectRoot?: string): Promise<SkillCatalog> => request('list', projectRoot ? { projectRoot } : {})
   const mutate = (endpoint: string, payload: Record<string, unknown>): Promise<SkillCatalog> => request(endpoint, payload)
+  const inspect = (path: string): Promise<SkillInspectResult> => request('inspect', { path })
+  const inspectRemote = (repository: string): Promise<SkillInspectResult> => request('inspect-remote', { repository })
   const checkUpdates = (): Promise<SkillUpdateReport> => request('check-updates')
 
   ctx.slots.inject('settings.section', () => ctx.slots.register({
@@ -128,7 +132,7 @@ export function apply(ctx: ClientContext): void {
     id: 'skills',
     order: 35,
     label: 'Skill 管理',
-    inject: () => ({ list, mutate, checkUpdates, pickDirectory: () => ctx.workspaces.pickDirectory(), loopback: connection.isLoopback }),
+    inject: () => ({ list, mutate, inspect, inspectRemote, checkUpdates, pickDirectory: () => ctx.workspaces.pickDirectory(), loopback: connection.isLoopback }),
   }, SkillManagerSection as never))
 
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
@@ -140,7 +144,7 @@ export function apply(ctx: ClientContext): void {
 }
 
 function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
-  const { list, mutate, checkUpdates, pickDirectory, loopback, useWorkspaces } = props
+  const { list, mutate, inspect, inspectRemote, checkUpdates, pickDirectory, loopback, useWorkspaces } = props
   const workspaces = useWorkspaces(state => state)
   const [projectRoot, setProjectRoot] = useState<string | undefined>(undefined)
   const [catalog, setCatalog] = useState<SkillCatalog | null>(null)
@@ -151,6 +155,8 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
   const [error, setError] = useState<string | null>(null)
   const [repositoryOpen, setRepositoryOpen] = useState(false)
   const [repository, setRepository] = useState('')
+  // 待确认导入：inspect 结果 + 已勾选集合；提交后清空。
+  const [selection, setSelection] = useState<{ entries: readonly SkillInspectEntry[]; chosen: ReadonlySet<string>; path?: string; repository?: string } | null>(null)
 
   useEffect(() => { ensureKeyframes() }, [])
 
@@ -192,16 +198,55 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
 
   const importSkill = async () => {
     const path = await pickDirectory()
-    if (path) await run(() => mutate('install', { path, projectRoot }))
+    if (!path) return
+    await inspectForInstall(() => inspect(path), path, undefined)
   }
 
   const importRepository = async (event: FormEvent) => {
     event.preventDefault()
     const source = repository.trim()
     if (!source) return
-    if (await run(() => mutate('install-remote', { repository: source, projectRoot }))) {
+    if (await inspectForInstall(() => inspectRemote(source), undefined, source)) {
       setRepository('')
       setRepositoryOpen(false)
+    }
+  }
+
+  // 拿到来源的 skill 列表后进入勾选面板；来源只有一个 skill 时跳过勾选直接装。
+  const inspectForInstall = async (call: () => Promise<SkillInspectResult>, path: string | undefined, repository: string | undefined): Promise<boolean> => {
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await call()
+      if (result.entries.length === 0) throw new Error('来源中没有可安装的 skill')
+      if (result.entries.length === 1) {
+        await installSelection([result.entries[0].name], path, repository)
+        return true
+      }
+      setSelection({ entries: result.entries, chosen: new Set(result.entries.map(entry => entry.name)), path, repository })
+      return true
+    } catch (reason) {
+      setError(messageOf(reason))
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const installSelection = async (names: readonly string[], path: string | undefined, repository: string | undefined) => {
+    setBusy(true)
+    setError(null)
+    try {
+      setCatalog(await mutate(repository !== undefined ? 'install-remote' : 'install', {
+        ...(repository !== undefined ? { repository } : { path }),
+        skills: names,
+        projectRoot,
+      }))
+      setSelection(null)
+    } catch (reason) {
+      setError(messageOf(reason))
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -231,7 +276,7 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
     setError(null)
     try {
       for (const entry of updatable) setCatalog(await mutate('update', { name: entry.name, projectRoot }))
-      setStatuses({})
+      await checkAll()
     } catch (reason) {
       setError(messageOf(reason))
     } finally {
@@ -287,6 +332,29 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
         h(GitBranch, { size: 14, 'aria-hidden': true }), '导入'),
       h('button', { type: 'button', style: iconButtonStyle, onClick: () => setRepositoryOpen(false), disabled: busy, title: '关闭仓库导入', 'aria-label': '关闭仓库导入' },
         h(X, { size: 15, 'aria-hidden': true })),
+    ) : null,
+    selection ? h('section', { 'aria-label': '选择要导入的 skill', style: { display: 'grid', gap: 8, padding: '12px 14px', borderRadius: 10, border: `1px solid ${tokens.borderStrong}` } },
+      h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 } },
+        h('strong', { style: { fontSize: 13, fontWeight: 600 } }, `来源提供 ${selection.entries.length} 个 skill，勾选要导入的：`),
+        h('button', { type: 'button', style: iconButtonStyle, onClick: () => setSelection(null), disabled: busy, title: '取消导入', 'aria-label': '取消导入' },
+          h(X, { size: 15, 'aria-hidden': true })),
+      ),
+      h('div', { style: { display: 'grid', gap: 4, maxHeight: 260, overflowY: 'auto', margin: '0 -4px', padding: '0 4px' } },
+        selection.entries.map(entry => h('label', { key: entry.name, style: { display: 'flex', alignItems: 'center', gap: 8, padding: '7px 6px', borderRadius: 7, cursor: busy ? 'default' : 'pointer', fontSize: 13 }, title: entry.description || entry.name },
+          h('input', { type: 'checkbox', checked: selection.chosen.has(entry.name), disabled: busy, onChange: () => setSelection(prev => prev && {
+            ...prev,
+            chosen: prev.chosen.has(entry.name)
+              ? new Set([...prev.chosen].filter(name => name !== entry.name))
+              : new Set([...prev.chosen, entry.name]),
+          }), 'aria-label': `导入 ${entry.name}`, style: checkboxStyle }),
+          h('span', { style: { ...monoStyle, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, entry.name),
+          h('span', { style: { color: tokens.secondary, fontSize: 12, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: '1 1 auto' } }, entry.description),
+        )),
+      ),
+      h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8 } },
+        h('button', { type: 'button', style: buttonStyle('primary', busy || selection.chosen.size === 0), disabled: busy || selection.chosen.size === 0, onClick: () => void installSelection([...selection.chosen], selection.path, selection.repository) },
+          h(Plus, { size: 14, 'aria-hidden': true }), `导入所选 (${selection.chosen.size})`),
+      ),
     ) : null,
     h('div', { style: { display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' } },
       h('div', { style: { position: 'relative', flex: '1 1 220px', display: 'flex', alignItems: 'center' } },
@@ -354,7 +422,7 @@ function ComposerSkillButton(props: ComposerProps): ReturnType<typeof h> {
   )
 }
 
-function ProjectSkillPopover(props: ManagerApi & { readonly projectRoot: string; readonly onClose: () => void }): ReturnType<typeof h> {
+function ProjectSkillPopover(props: Pick<ManagerApi, 'list' | 'mutate'> & { readonly projectRoot: string; readonly onClose: () => void }): ReturnType<typeof h> {
   const { projectRoot, list, mutate, onClose } = props
   const theme = currentThemeColors()
   const [catalog, setCatalog] = useState<SkillCatalog | null>(null)
@@ -450,6 +518,7 @@ function SkillRow(props: {
         h('strong', { style: { ...monoStyle, fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, entry.name),
         badge ? h('span', { style: { display: 'inline-flex', alignItems: 'center', flex: '0 1 auto', padding: '2px 6px', borderRadius: 999, fontSize: 11, lineHeight: '16px', whiteSpace: 'nowrap', color: badge.color, background: badge.background, border: badge.border } }, badge.label) : null,
         h(SourceBadge, { entry }),
+        entry.modelInvocable === false ? h('span', { title: 'skill 声明了 disable-model-invocation：模型不会自动调用，只能用户手动引用', style: { display: 'inline-flex', alignItems: 'center', flex: '0 1 auto', padding: '2px 6px', borderRadius: 999, fontSize: 11, lineHeight: '16px', whiteSpace: 'nowrap', color: tokens.secondary, background: 'rgba(148, 163, 184, .09)' } }, '仅手动') : null,
         h(StatusBadge, { active: entry.globalEnabled, icon: Globe, label: '全局' }),
         projectAvailable ? h(StatusBadge, { active: entry.projectEnabled, icon: FolderGit, label: projectLabel }) : null,
       ),
