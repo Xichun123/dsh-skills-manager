@@ -1,9 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { SkillManager } from '../lib/index.js'
@@ -220,6 +220,64 @@ test('checks local and git sources for updates without applying them', async (co
   assert.deepEqual(await statusOf(), { alpha: 'update-available', beta: 'update-available' })
   // Detection never applies the update.
   assert.equal(await readFile(join(storageDir, '.agents', 'skills', 'alpha', 'SKILL.md'), 'utf8'), skillMarkdown('Local one', 'Version one.'))
+})
+
+test('checks separate Git sources concurrently', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skill-manager-concurrent-check-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+
+  const manager = new SkillManager(hostContext, { storageDir: join(root, 'storage') })
+  for (const name of ['alpha', 'beta']) {
+    const repository = join(root, `${name}-repository`)
+    const skill = join(repository, 'skills', name)
+    await mkdir(skill, { recursive: true })
+    await execFileAsync('git', ['init', repository])
+    await execFileAsync('git', ['-C', repository, 'config', 'user.email', 'test@example.com'])
+    await execFileAsync('git', ['-C', repository, 'config', 'user.name', 'Skill Manager Test'])
+    await writeFile(join(skill, 'SKILL.md'), skillMarkdown(`${name} description`, `${name} body.`, name), 'utf8')
+    await execFileAsync('git', ['-C', repository, 'add', '.'])
+    await execFileAsync('git', ['-C', repository, 'commit', '-m', 'initial'])
+    await manager.installRemote(pathToFileURL(repository).href)
+  }
+
+  const bin = join(root, 'bin')
+  const barrier = join(root, 'git-clone-barrier')
+  const gitWrapper = join(bin, 'git')
+  await mkdir(bin, { recursive: true })
+  await writeFile(gitWrapper, `#!/usr/bin/env node
+const { spawn } = require('node:child_process')
+const { mkdirSync, readdirSync, writeFileSync } = require('node:fs')
+const { delimiter, join } = require('node:path')
+const args = process.argv.slice(2)
+if (args[0] === 'clone') {
+  const barrier = process.env.DSH_SKILL_MANAGER_GIT_BARRIER
+  mkdirSync(barrier, { recursive: true })
+  writeFileSync(join(barrier, String(process.pid)), '')
+  const wait = new Int32Array(new SharedArrayBuffer(4))
+  const deadline = Date.now() + 1500
+  while (readdirSync(barrier).length < 2 && Date.now() < deadline) Atomics.wait(wait, 0, 0, 20)
+  if (readdirSync(barrier).length < 2) process.exit(97)
+}
+const path = (process.env.PATH || '').split(delimiter).slice(1).join(delimiter)
+const child = spawn('git', args, { stdio: 'inherit', env: { ...process.env, PATH: path } })
+child.on('error', () => process.exit(98))
+child.on('exit', code => process.exit(code ?? 1))
+`, 'utf8')
+  await chmod(gitWrapper, 0o755)
+
+  const previousPath = process.env.PATH
+  const previousBarrier = process.env.DSH_SKILL_MANAGER_GIT_BARRIER
+  process.env.PATH = `${bin}${delimiter}${previousPath ?? ''}`
+  process.env.DSH_SKILL_MANAGER_GIT_BARRIER = barrier
+  try {
+    const statuses = Object.fromEntries((await manager.checkUpdates()).entries.map(entry => [entry.name, entry.status]))
+    assert.deepEqual(statuses, { alpha: 'current', beta: 'current' })
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH
+    else process.env.PATH = previousPath
+    if (previousBarrier === undefined) delete process.env.DSH_SKILL_MANAGER_GIT_BARRIER
+    else process.env.DSH_SKILL_MANAGER_GIT_BARRIER = previousBarrier
+  }
 })
 
 test('rejects credentials embedded in repository URLs', async (context) => {

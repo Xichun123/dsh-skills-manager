@@ -18,5 +18,6 @@
 - Git 支持 GitHub `owner/repo`、HTTPS、SSH、Git 与 file URL；私有仓库复用本机 Git credential helper 或 SSH，拒绝 URL 内嵌凭据且不保存 token。
 - 新导入 skill 默认关闭；仅接受目录型 `<name>/SKILL.md`。全局启用会对所有 cwd 生效，项目启用会对所选工作区及其子目录生效。
 - Provider 复用 `@deepseek-ai/dsh-skill-filesystem` 的解析、资源和 watcher 能力，只过滤由本插件管理的库条目。
+- 一键更新检测按来源分组；不同来源的浅克隆以及同一来源内各 skill 的内容哈希并发执行，且检测过程不修改已安装内容。
 - 设置页使用 `settings.section` 作为左侧一级入口；输入框 `+` 右边的扳手图标控件打开当前会话 cwd 的项目级开关。
 - RPC 仅注册 loopback authority，因为导入和持久化操作会触碰本机文件系统。

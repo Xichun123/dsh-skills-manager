@@ -34,7 +34,7 @@ After changing the bundle or installed dependencies, restart the Harness service
 3. When a source offers more than one skill, a checklist shows what it contains; untick what you do not want, then **导入所选 (N)** installs only the selection. Single-skill sources install directly.
 4. Enable **全局** or select a workspace and enable **项目**. Rows whose frontmatter sets `disable-model-invocation` show a **仅手动** badge: the model never auto-loads them, only explicit user references do.
 5. Use the refresh icon on a row to reinstall that skill from the source recorded in `skills-lock.json`.
-6. Use **检测** to check every installed skill for upstream updates without applying them; rows show a badge (有更新 / 已是最新 / 上游已删除 / 无法检测). When updates are found, **全部更新 (N)** applies them one by one and re-checks automatically.
+6. Use **检测** to check every installed skill for upstream updates without applying them; independent sources and skill folders are checked concurrently, and rows show a badge (有更新 / 已是最新 / 上游已删除 / 无法检测). When updates are found, **全部更新 (N)** applies them one by one and re-checks automatically.
 7. Use the wrench control beside the composer attachment button to toggle installed skills for the current session workspace only.
 8. Remove an installed skill with **移除**. This deletes only the plugin's private library entry, not the local source or remote repository.
 

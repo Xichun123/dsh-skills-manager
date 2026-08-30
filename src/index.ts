@@ -12,7 +12,7 @@ import { FileSystemSkillProvider } from '@deepseek-ai/dsh-skill-filesystem'
 import type { SkillCandidate, SkillLookupOptions, SkillProvider, SkillProviderControl } from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import { EMPTY_STATE, isRecord, isEnabledFor, isPathWithin, normalizeState, removeSkill, setEnabled } from './state.js'
-import type { ManagerState, SkillCatalog, SkillCatalogEntry, SkillInspectEntry, SkillInspectResult, SkillOrigin, SkillScope, SkillUpdateReport, SkillUpdateReportEntry, SkillUpdateStatus } from './types.js'
+import type { ManagerState, SkillCatalog, SkillCatalogEntry, SkillInspectEntry, SkillInspectResult, SkillOrigin, SkillScope, SkillUpdateReport, SkillUpdateReportEntry } from './types.js'
 
 export const name = 'dsh-skills-manager'
 export const inject = ['skills', 'connection']
@@ -173,7 +173,6 @@ export class SkillManager {
     return this.catalog(projectRoot)
   }
 
-  // ponytail: sources are checked sequentially to keep git/fetch usage trivial; parallelize per-source if checks feel slow
   async checkUpdates(): Promise<SkillUpdateReport> {
     await this.loaded
     interface LockEntry {
@@ -197,57 +196,48 @@ export class SkillManager {
       const source = item[1].source ?? ''
       bySource.set(source, [...bySource.get(source) ?? [], item])
     }
-    const report: SkillUpdateReportEntry[] = []
-    for (const [source, items] of bySource) {
+    // Independent sources (including their Git clones) and skills are checked concurrently.
+    const report = (await Promise.all([...bySource].map(async ([source, items]): Promise<SkillUpdateReportEntry[]> => {
+      const unknownEntries = (): SkillUpdateReportEntry[] => items.map(([name]) => ({ name, status: 'unknown' }))
       const first = items[0][1]
-      const apply = (statuses: Readonly<Record<string, SkillUpdateStatus>>) => {
-        for (const [name] of items) report.push({ name, status: statuses[name] ?? 'unknown' })
-      }
       if (first.sourceType === 'local') {
         // The CLI stores portable relative sources; they resolve against the lock file's directory.
         const sourceRoot = isAbsolute(source) ? source : resolve(this.root, source)
-        const statuses: Record<string, SkillUpdateStatus> = {}
-        for (const [name] of items) {
+        return Promise.all(items.map(async ([name]): Promise<SkillUpdateReportEntry> => {
           const [sourceHash, installedHash] = await Promise.all([
             computeSkillFolderHash(join(sourceRoot, name)).catch(() => undefined),
             computeSkillFolderHash(join(this.library, name)).catch(() => undefined),
           ])
-          statuses[name] = sourceHash === undefined ? 'unknown' : sourceHash === installedHash ? 'current' : 'update-available'
-        }
-        apply(statuses)
-        continue
+          return { name, status: sourceHash === undefined ? 'unknown' : sourceHash === installedHash ? 'current' : 'update-available' }
+        }))
       }
       if (first.sourceType === 'github' || first.sourceType === 'git' || first.sourceType === 'gitlab') {
-        if (!first.skillPath) { apply({}); continue }
+        if (!first.skillPath) return unknownEntries()
         // ponytail: always shallow-clone and compare content hashes. The CLI's project lock stores content
         // hashes even for github sources, so the GitHub tree API (tree SHAs) is not comparable to it.
         const url = first.sourceUrl || source
-        let latest: LatestHashes | undefined
+        let latest: LatestHashes
         try {
           latest = await computeLatestHashesFromGit(url, first.ref, items.map(([, entry]) => entry.skillPath!))
         } catch {
-          apply({})
-          continue
+          return unknownEntries()
         }
-        const statuses: Record<string, SkillUpdateStatus> = {}
-        for (const [name, entry] of items) {
+        return Promise.all(items.map(async ([name, entry]): Promise<SkillUpdateReportEntry> => {
           const remote = latest.hashes.get(entry.skillPath!)
-          if (remote === undefined) { statuses[name] = 'deleted-upstream'; continue }
+          if (remote === undefined) return { name, status: 'deleted-upstream' }
           // The lock's hash records upstream at install time. For repos whose skillPath is the
           // repo root (e.g. iOfficeAI/OfficeCLI), the installed copy legitimately diverges from the
           // whole-repo hash (the CLI's copy drops .git and may nest skills/<name>/ duplicates), so
           // trust lock-vs-remote first: equal means nothing new upstream — installed drift is then
           // local noise, not an update.
-          if (entry.computedHash !== undefined && entry.computedHash === remote) { statuses[name] = 'current'; continue }
+          if (entry.computedHash !== undefined && entry.computedHash === remote) return { name, status: 'current' }
           // Compare against the installed copy so locally-diverged installs show as updatable.
-          const installed = await computeSkillFolderHash(join(this.library, name)).catch(() => undefined)
-          statuses[name] = installed === undefined ? 'unknown' : installed === remote ? 'current' : 'update-available'
-        }
-        apply(statuses)
-        continue
+          const installedHash = await computeSkillFolderHash(join(this.library, name)).catch(() => undefined)
+          return { name, status: installedHash === undefined ? 'unknown' : installedHash === remote ? 'current' : 'update-available' }
+        }))
       }
-      apply({})
-    }
+      return unknownEntries()
+    }))).flat()
     return { entries: report.sort((a, b) => a.name.localeCompare(b.name)) }
   }
 
@@ -585,11 +575,11 @@ async function computeLatestHashesFromGit(url: string, ref: string | undefined, 
       maxBuffer: 4 * 1024 * 1024,
     })
     const hashes = new Map<string, string>()
-    for (const skillPath of skillPaths) {
+    await Promise.all(skillPaths.map(async (skillPath) => {
       // ponytail: a stat (via the hash read) decides deleted-upstream; no whole-repo walk.
       const hash = await computeSkillFolderHash(join(temporaryRoot, 'repo', skillFolderFromPath(skillPath))).catch(() => undefined)
       if (hash !== undefined) hashes.set(skillPath, hash)
-    }
+    }))
     return { hashes }
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true })
