@@ -1,7 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { projectPopoverEnabledCount, projectPopoverRow } from '../lib/types/client/popover.js'
-import { projectRootForSession } from '../lib/types/client/session.js'
 
 function entry(overrides = {}) {
   return {
@@ -10,17 +9,6 @@ function entry(overrides = {}) {
     ...overrides,
   }
 }
-
-test('resolves the composer project root from the session list summary', () => {
-  const state = {
-    byId: {
-      active: { cwd: '/workspaces/demo' },
-    },
-  }
-
-  assert.equal(projectRootForSession(state, 'active'), '/workspaces/demo')
-  assert.equal(projectRootForSession(state, 'missing'), undefined)
-})
 
 test('project popover treats global-only skills as enabled and locked', () => {
   const row = projectPopoverRow(entry({

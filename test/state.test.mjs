@@ -44,11 +44,18 @@ test('normalizes the current state schema', () => {
   })
 })
 
-test('rejects the former state shape instead of migrating it', () => {
+test('rejects unversioned or malformed state instead of migrating it', () => {
   assert.throws(() => normalizeState({
-    version: 1,
     skills: {},
     globalEnabled: [],
     projectEnabled: {},
   }), /unsupported shape/)
+  assert.throws(() => normalizeState({ version: 2 }), /unsupported shape/)
+  // Extra keys are ignored: only the version contract is enforced.
+  assert.doesNotThrow(() => normalizeState({
+    version: 1,
+    globalEnabled: [],
+    projectEnabled: {},
+    futureField: true,
+  }))
 })

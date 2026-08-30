@@ -10,7 +10,6 @@ export const EMPTY_STATE: ManagerState = {
 export function normalizeState(value: unknown): ManagerState {
   if (
     !isRecord(value)
-    || Object.keys(value).length !== 3
     || value.version !== 1
     || !Array.isArray(value.globalEnabled)
     || !isRecord(value.projectEnabled)
@@ -91,6 +90,6 @@ function cleanProjects(value: Record<string, unknown>): Record<string, string[]>
   return result
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

@@ -11,7 +11,7 @@ import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { FileSystemSkillProvider } from '@deepseek-ai/dsh-skill-filesystem'
 import type { SkillCandidate, SkillLookupOptions, SkillProvider, SkillProviderControl } from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-client-connection'
-import { EMPTY_STATE, isEnabledFor, isPathWithin, normalizeState, removeSkill, setEnabled } from './state.js'
+import { EMPTY_STATE, isRecord, isEnabledFor, isPathWithin, normalizeState, removeSkill, setEnabled } from './state.js'
 import type { ManagerState, SkillCatalog, SkillCatalogEntry, SkillOrigin, SkillScope, SkillUpdateReport, SkillUpdateReportEntry, SkillUpdateStatus } from './types.js'
 
 export const name = 'dsh-skills-manager'
@@ -42,25 +42,32 @@ export class SkillManager {
   private readonly stateFile: string
   private state: ManagerState = EMPTY_STATE
   private readonly loaded: Promise<void>
-  private writeQueue: Promise<void> = Promise.resolve()
   private providerControl: SkillProviderControl | undefined
-  private filesystemProvider: FileSystemSkillProvider
+  private lazyProvider: FileSystemSkillProvider | undefined
 
   constructor(private readonly ctx: Context, config: Config) {
     const storageDir = config.storageDir?.trim()
     this.root = storageDir ? resolve(storageDir) : join(resolveDshHome(), 'skill-manager')
     this.library = join(this.root, '.agents', 'skills')
     this.stateFile = join(this.root, 'state.json')
-    this.filesystemProvider = this.createFilesystemProvider({
-      signal: new AbortController().signal,
-      invalidate: () => undefined,
-    }, false)
     this.loaded = this.load()
+  }
+
+  private get filesystemProvider(): FileSystemSkillProvider {
+    // ponytail: the constructor-built throwaway provider is gone; the first list/get
+    // creates a watching provider bound to the registry's lifecycle control.
+    if (this.lazyProvider === undefined) {
+      this.lazyProvider = this.createFilesystemProvider(this.providerControl ?? {
+        signal: new AbortController().signal,
+        invalidate: () => undefined,
+      }, this.providerControl !== undefined)
+    }
+    return this.lazyProvider
   }
 
   provider(control: SkillProviderControl): SkillProvider {
     this.providerControl = control
-    this.filesystemProvider = this.createFilesystemProvider(control, true)
+    this.lazyProvider = this.createFilesystemProvider(control, true)
 
     return {
       name: 'skill-manager',
@@ -203,9 +210,8 @@ export class SkillManager {
         }
         const statuses: Record<string, SkillUpdateStatus> = {}
         for (const [name, entry] of items) {
-          if (!latest.paths.has(entry.skillPath!)) { statuses[name] = 'deleted-upstream'; continue }
           const remote = latest.hashes.get(entry.skillPath!)
-          if (!remote) { statuses[name] = 'unknown'; continue }
+          if (remote === undefined) { statuses[name] = 'deleted-upstream'; continue }
           // Compare against the installed copy so locally-diverged installs show as updatable.
           const installed = await computeSkillFolderHash(join(this.library, name)).catch(() => undefined)
           statuses[name] = installed === undefined ? 'unknown' : installed === remote ? 'current' : 'update-available'
@@ -286,27 +292,20 @@ export class SkillManager {
   private async load(): Promise<void> {
     await mkdir(this.library, { recursive: true })
     try {
-      const raw: unknown = JSON.parse(await readFile(this.stateFile, 'utf8'))
-      this.state = normalizeState(raw)
+      this.state = normalizeState(JSON.parse(await readFile(this.stateFile, 'utf8')))
     } catch (error) {
-      if (isNodeError(error) && error.code === 'ENOENT') {
-        this.state = EMPTY_STATE
-        await this.persist()
-        return
-      }
-      throw error
+      if (!isNodeError(error) || error.code !== 'ENOENT') throw error
+      this.state = EMPTY_STATE
     }
   }
 
+  // ponytail: no write queue — the random temp name + rename is already atomic and
+  // concurrent callers stringify the same in-memory state; add a queue if writers diverge.
   private async persist(): Promise<void> {
-    const operation = this.writeQueue.then(async () => {
-      await mkdir(this.root, { recursive: true })
-      const temp = `${this.stateFile}.tmp-${randomUUID()}`
-      await writeFile(temp, `${JSON.stringify(this.state, null, 2)}\n`, 'utf8')
-      await rename(temp, this.stateFile)
-    })
-    this.writeQueue = operation.catch(() => undefined)
-    await operation
+    await mkdir(this.root, { recursive: true })
+    const temp = `${this.stateFile}.tmp-${randomUUID()}`
+    await writeFile(temp, `${JSON.stringify(this.state, null, 2)}\n`, 'utf8')
+    await rename(temp, this.stateFile)
   }
 }
 
@@ -365,13 +364,11 @@ async function handleRpc(manager: SkillManager, endpoint: string, payload: unkno
 
 const UNSAFE_SYMLINK = 'skill source contains a broken or escaping symlink'
 
-// The CLI dereferences symlinks while copying. This preflight blocks static escapes, but mutable sources can still change afterward.
+// The CLI dereferences symlinks while copying, so an escaping symlink is only visible
+// in the source tree: a local directory is scanned directly; a remote one is shallow-cloned
+// for a preflight scan. Mutable sources can still change after the check (TOCTOU ceiling).
 async function validateSource(source: string, sourceType: 'local' | 'git'): Promise<void> {
-  if (sourceType === 'local') {
-    await assertSafeSourceTree(source)
-    return
-  }
-  if (await pathExists(source) && (await stat(source)).isDirectory()) {
+  if (sourceType === 'local' || await isDirectory(source)) {
     await assertSafeSourceTree(source)
     return
   }
@@ -450,16 +447,6 @@ function originFromCli(skill: CliSkill | undefined): SkillOrigin | undefined {
   return undefined
 }
 
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await stat(path)
-    return true
-  } catch (error) {
-    if (isNodeError(error) && error.code === 'ENOENT') return false
-    throw error
-  }
-}
-
 async function isDirectory(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isDirectory()
@@ -488,16 +475,11 @@ function requiredScope(value: unknown): SkillScope {
   return value
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 function isNodeError(value: unknown): value is NodeJS.ErrnoException {
   return value instanceof Error && 'code' in value
 }
 
 interface LatestHashes {
-  readonly paths: ReadonlySet<string>
   readonly hashes: ReadonlyMap<string, string>
 }
 
@@ -523,10 +505,7 @@ async function computeSkillFolderHash(skillDir: string): Promise<string> {
 }
 
 function skillFolderFromPath(skillPath: string): string {
-  let folder = skillPath.replace(/\\/g, '/')
-  if (folder.toLowerCase().endsWith('/skill.md')) folder = folder.slice(0, -'/skill.md'.length)
-  else if (folder.toLowerCase().endsWith('skill.md')) folder = folder.slice(0, -'skill.md'.length)
-  return folder.endsWith('/') ? folder.slice(0, -1) : folder
+  return skillPath.replace(/\/?skill\.md$/i, '')
 }
 
 // Mirror the CLI's update check: shallow clone the source and hash the skill folders.
@@ -537,24 +516,13 @@ async function computeLatestHashesFromGit(url: string, ref: string | undefined, 
       timeout: 120_000,
       maxBuffer: 4 * 1024 * 1024,
     })
-    const repo = join(temporaryRoot, 'repo')
-    const paths = new Set<string>()
-    const walk = async (directory: string): Promise<void> => {
-      for (const entry of await readdir(directory, { withFileTypes: true })) {
-        if (entry.name === '.git') continue
-        const fullPath = join(directory, entry.name)
-        if (entry.isDirectory()) await walk(fullPath)
-        else if (entry.isFile()) paths.add(relative(repo, fullPath).split(sep).join('/'))
-      }
-    }
-    await walk(repo)
     const hashes = new Map<string, string>()
     for (const skillPath of skillPaths) {
-      if (!paths.has(skillPath)) continue
-      const folder = join(repo, skillFolderFromPath(skillPath))
-      hashes.set(skillPath, await computeSkillFolderHash(folder).catch(() => ''))
+      // ponytail: a stat (via the hash read) decides deleted-upstream; no whole-repo walk.
+      const hash = await computeSkillFolderHash(join(temporaryRoot, 'repo', skillFolderFromPath(skillPath))).catch(() => undefined)
+      if (hash !== undefined) hashes.set(skillPath, hash)
     }
-    return { paths, hashes }
+    return { hashes }
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true })
   }

@@ -1,4 +1,5 @@
 import { createElement as h, useCallback, useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type ComponentType, type FormEvent } from 'react'
+import { useDismissOnOutsidePointer } from '@deepseek-ai/dsh-client-ui-primitives'
 import Wrench from 'lucide-react/dist/esm/icons/wrench.mjs'
 import Plus from 'lucide-react/dist/esm/icons/plus.mjs'
 import RefreshCw from 'lucide-react/dist/esm/icons/refresh-cw.mjs'
@@ -11,16 +12,11 @@ import GitBranch from 'lucide-react/dist/esm/icons/git-branch.mjs'
 import PackageOpen from 'lucide-react/dist/esm/icons/package-open.mjs'
 import Puzzle from 'lucide-react/dist/esm/icons/puzzle.mjs'
 import AlertCircle from 'lucide-react/dist/esm/icons/alert-circle.mjs'
-import List from 'lucide-react/dist/esm/icons/list.mjs'
-import Folder from 'lucide-react/dist/esm/icons/folder.mjs'
-import ChevronDown from 'lucide-react/dist/esm/icons/chevron-down.mjs'
-import ChevronRight from 'lucide-react/dist/esm/icons/chevron-right.mjs'
 import type { ClientContext, SessionId, SessionListState, WorkspaceListState } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ConnectionHandle, RpcResult } from '@deepseek-ai/dsh-client-connection/client'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SkillCatalog, SkillCatalogEntry, SkillUpdateReport, SkillUpdateStatus } from '../types.js'
 import { projectPopoverEnabledCount, projectPopoverRow } from './popover.js'
-import { projectRootForSession } from './session.js'
 import type {} from '@deepseek-ai/dsh-client-connection/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -118,18 +114,14 @@ const checkboxStyle: CSSProperties = { width: 16, height: 16, margin: 0, accentC
 
 export function apply(ctx: ClientContext): void {
   const connection = (ctx as unknown as { readonly connection: ConnectionHandle }).connection
-  const request = async (endpoint: string, payload: Record<string, unknown> = {}): Promise<SkillCatalog> => {
-    const result = await connection.rpc.call('/skill-manager', endpoint, payload) as RpcResult<SkillCatalog>
+  const request = async <T>(endpoint: string, payload: Record<string, unknown> = {}): Promise<T> => {
+    const result = await connection.rpc.call('/skill-manager', endpoint, payload) as RpcResult<T>
     if (!result.ok) throw new Error(result.error.message)
     return result.value
   }
   const list = (projectRoot?: string): Promise<SkillCatalog> => request('list', projectRoot ? { projectRoot } : {})
-  const mutate = request
-  const checkUpdates = async (): Promise<SkillUpdateReport> => {
-    const result = await connection.rpc.call('/skill-manager', 'check-updates', {}) as RpcResult<SkillUpdateReport>
-    if (!result.ok) throw new Error(result.error.message)
-    return result.value
-  }
+  const mutate = (endpoint: string, payload: Record<string, unknown>): Promise<SkillCatalog> => request(endpoint, payload)
+  const checkUpdates = (): Promise<SkillUpdateReport> => request('check-updates')
 
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
@@ -159,8 +151,6 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
   const [error, setError] = useState<string | null>(null)
   const [repositoryOpen, setRepositoryOpen] = useState(false)
   const [repository, setRepository] = useState('')
-  const [view, setView] = useState<'flat' | 'grouped'>('flat')
-  const [collapsed, setCollapsed] = useState<Readonly<Record<string, boolean>>>({})
 
   useEffect(() => { ensureKeyframes() }, [])
 
@@ -199,7 +189,6 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
 
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filtered = (catalog?.entries ?? []).filter(entry => normalizedQuery.length === 0 || `${entry.name} ${entry.description}`.toLocaleLowerCase().includes(normalizedQuery))
-  const groups = groupBySource(filtered)
 
   const importSkill = async () => {
     const path = await pickDirectory()
@@ -311,12 +300,6 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
           ...workspaces.items.map(workspace => h('option', { key: workspace.workspaceId, value: workspace.path }, workspace.title)),
         ),
       ),
-      h('div', { role: 'group', 'aria-label': '视图切换', style: { display: 'flex', flex: '0 0 auto', border: `1px solid ${tokens.border}`, borderRadius: 8, overflow: 'hidden' } },
-        h('button', { type: 'button', onClick: () => setView('flat'), 'aria-pressed': view === 'flat', title: '平铺列表', style: { ...iconButtonStyle, width: 32, height: 32, borderRadius: 0, color: view === 'flat' ? tokens.accent : tokens.secondary, background: view === 'flat' ? 'rgba(99, 102, 241, .12)' : 'transparent' } },
-          h(List, { size: 15, 'aria-hidden': true })),
-        h('button', { type: 'button', onClick: () => setView('grouped'), 'aria-pressed': view === 'grouped', title: '按来源仓库分组', style: { ...iconButtonStyle, width: 32, height: 32, borderRadius: 0, color: view === 'grouped' ? tokens.accent : tokens.secondary, background: view === 'grouped' ? 'rgba(99, 102, 241, .12)' : 'transparent' } },
-          h(Folder, { size: 15, 'aria-hidden': true })),
-      ),
     ),
     error ? h('div', { role: 'alert', style: { display: 'flex', gap: 8, alignItems: 'center', margin: 0, padding: '9px 12px', borderRadius: 8, fontSize: 13, color: tokens.danger, background: 'rgba(220, 38, 38, .08)', border: '1px solid rgba(220, 38, 38, .28)' } },
       h(AlertCircle, { size: 15, 'aria-hidden': true }), error) : null,
@@ -325,49 +308,9 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
         ? h('p', { style: { margin: 0, padding: '24px 0', textAlign: 'center', fontSize: 13, color: tokens.secondary } }, '正在读取…')
         : filtered.length === 0
           ? h(EmptyState, { hasAny: (catalog.entries.length ?? 0) > 0 })
-          : view === 'flat'
-            ? filtered.map(entry => h(SkillRow, rowProps(entry)))
-            : groups.map(group => h('div', { key: group.key, style: { display: 'grid', gap: 8 } },
-              h('button', {
-                type: 'button',
-                onClick: () => setCollapsed(prev => ({ ...prev, [group.key]: !prev[group.key] })),
-                'aria-expanded': !collapsed[group.key],
-                style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: 13, fontWeight: 600, textAlign: 'left' },
-              },
-                collapsed[group.key] ? h(ChevronRight, { size: 14, 'aria-hidden': true, style: { color: tokens.secondary, flex: '0 0 auto' } }) : h(ChevronDown, { size: 14, 'aria-hidden': true, style: { color: tokens.secondary, flex: '0 0 auto' } }),
-                h(GitBranch, { size: 13, 'aria-hidden': true, style: { color: tokens.secondary, flex: '0 0 auto' } }),
-                h('span', { title: group.key === '__local__' ? undefined : group.key, style: { ...monoStyle, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, group.label),
-                h('span', { style: { color: tokens.secondary, fontWeight: 400, flex: '0 0 auto' } }, `${group.entries.length} 个`),
-              ),
-              collapsed[group.key] ? null : group.entries.map(entry => h(SkillRow, rowProps(entry))),
-            )),
+          : filtered.map(entry => h(SkillRow, rowProps(entry))),
     ),
   )
-}
-
-interface SourceGroup {
-  readonly key: string
-  readonly label: string
-  readonly entries: readonly SkillCatalogEntry[]
-}
-
-function groupBySource(entries: readonly SkillCatalogEntry[]): readonly SourceGroup[] {
-  const groups = new Map<string, { label: string; entries: SkillCatalogEntry[] }>()
-  for (const entry of entries) {
-    const key = entry.sourceType === 'git' && entry.sourceUrl ? entry.sourceUrl : '__local__'
-    const label = key === '__local__' ? '本机导入' : shortRepoLabel(key)
-    const group = groups.get(key) ?? { label, entries: [] }
-    group.entries.push(entry)
-    groups.set(key, group)
-  }
-  return [...groups.entries()]
-    .map(([key, group]) => ({ key, label: group.label, entries: group.entries }))
-    .sort((a, b) => (a.key === '__local__' ? 1 : b.key === '__local__' ? -1 : a.label.localeCompare(b.label)))
-}
-
-function shortRepoLabel(url: string): string {
-  const match = /^(?:https?:\/\/|git@|ssh:\/\/git@)?([^/:]+)[:/]([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(url)
-  return match ? `${match[2]} (${match[1]})` : url
 }
 
 function EmptyState(props: { readonly hasAny: boolean }): ReturnType<typeof h> {
@@ -379,23 +322,10 @@ function EmptyState(props: { readonly hasAny: boolean }): ReturnType<typeof h> {
 
 function ComposerSkillButton(props: ComposerProps): ReturnType<typeof h> {
   const { session, useSessions, list, mutate } = props
-  const projectRoot = useSessions(state => projectRootForSession(state, session.sessionId))
+  const projectRoot = useSessions(state => state.byId[session.sessionId]?.cwd)
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const onPointerDown = (event: PointerEvent) => {
-      if (containerRef.current && event.target instanceof Node && !containerRef.current.contains(event.target)) setOpen(false)
-    }
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false) }
-    document.addEventListener('pointerdown', onPointerDown)
-    document.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown)
-      document.removeEventListener('keydown', onKeyDown)
-    }
-  }, [open])
+  useDismissOnOutsidePointer(containerRef, open, setOpen)
 
   return h('div', { ref: containerRef, style: { position: 'relative', display: 'inline-flex', marginLeft: -25 } },
     h('button', {

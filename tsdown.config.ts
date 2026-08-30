@@ -33,8 +33,9 @@ export default defineConfig([
     dts: false,
     sourcemap: true,
     clean: false,
-    external: ['react'],
-    noExternal: (id: string) => id === 'react' ? undefined : true,
+    external: ['react', '@deepseek-ai/dsh-client-ui-primitives'],
+    // The primitives package ships from the shell's frozen module table (PLATFORM_MODULES).
+    noExternal: (id: string) => id === 'react' || id === '@deepseek-ai/dsh-client-ui-primitives' ? undefined : true,
     outputOptions: {
       entryFileNames: 'client.js',
       banner: `window.__ModuleLoader__.load({ id: ${JSON.stringify(packageName)}, factory: (require) => {`,
