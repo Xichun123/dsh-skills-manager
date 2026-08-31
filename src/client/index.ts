@@ -3,6 +3,7 @@ import { Pill, useDismissOnOutsidePointer } from '@deepseek-ai/dsh-client-ui-pri
 import Wrench from 'lucide-react/dist/esm/icons/wrench.mjs'
 import Plus from 'lucide-react/dist/esm/icons/plus.mjs'
 import RefreshCw from 'lucide-react/dist/esm/icons/refresh-cw.mjs'
+import SearchCheck from 'lucide-react/dist/esm/icons/search-check.mjs'
 import Search from 'lucide-react/dist/esm/icons/search.mjs'
 import X from 'lucide-react/dist/esm/icons/x.mjs'
 import Trash2 from 'lucide-react/dist/esm/icons/trash-2.mjs'
@@ -333,7 +334,7 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
       ),
       h('div', { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
         h('button', { type: 'button', style: buttonStyle('ghost', busy || checking), onClick: () => void checkAll(), disabled: busy || checking, title: '检测全部 skill 是否有更新（只检测，不更新）' },
-          h(RefreshCw, { size: 14, 'aria-hidden': true, style: checking ? spinnerStyle : undefined }), checking ? '检测中…' : '检测'),
+          h(SearchCheck, { size: 14, 'aria-hidden': true }), checking ? '检测中…' : '检测'),
         updatable.length > 0 ? h('button', { type: 'button', style: buttonStyle('primary', busy || checking || !loopback), onClick: () => void updateAll(), disabled: busy || checking || !loopback, title: loopback ? `更新全部 ${updatable.length} 个有更新的 skill` : '仅在本机连接时可更新' },
           h(RefreshCw, { size: 14, 'aria-hidden': true }), `全部更新 (${updatable.length})`) : null,
         h('button', { type: 'button', style: buttonStyle('ghost', busy || !loopback), onClick: () => setRepositoryOpen(value => !value), disabled: busy || !loopback, title: loopback ? '从 Git 仓库导入 skill' : '仅在本机连接时可导入' },
