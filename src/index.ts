@@ -9,9 +9,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { FileSystemSkillProvider } from '@deepseek-ai/dsh-skill-filesystem'
-import type { SkillCandidate, SkillLookupOptions, SkillProvider, SkillProviderControl } from '@deepseek-ai/dsh-skill'
+import type { SkillCandidate, SkillInvocationPolicy, SkillLookupOptions, SkillProvider, SkillProviderControl } from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-client-connection'
-import { EMPTY_STATE, isRecord, isEnabledFor, isPathWithin, normalizeState, removeSkill, setEnabled } from './state.js'
+import { EMPTY_STATE, isRecord, isEnabledFor, isPathWithin, normalizeState, removeSkill, setEnabled, setModelInvocation } from './state.js'
 import type { ManagerState, SkillCatalog, SkillCatalogEntry, SkillInspectEntry, SkillInspectResult, SkillOrigin, SkillScope, SkillUpdateReport, SkillUpdateReportEntry } from './types.js'
 
 export const name = 'dsh-skills-manager'
@@ -78,6 +78,7 @@ export class SkillManager {
           .filter(candidate => isEnabledFor(this.state, candidate.name, options.cwd))
           .map(candidate => ({
             ...candidate,
+            invocation: this.invocationFor(candidate),
             provider: 'skill-manager',
             source: 'skill-manager',
             rank: 50,
@@ -86,7 +87,9 @@ export class SkillManager {
       },
       get: async (candidate, options) => {
         await this.loaded
-        return this.filesystemProvider.get(candidate.locator as SkillCandidate, options)
+        const definition = await this.filesystemProvider.get(candidate.locator as SkillCandidate, options)
+        // 覆盖也要落到已加载定义：skill 工具在 summary 之后会再校验一次 definition 的 invocation。
+        return definition && { ...definition, invocation: this.invocationFor(definition) }
       },
     }
   }
@@ -111,10 +114,16 @@ export class SkillManager {
           projectEnabled: projectRoot !== undefined && (this.state.projectEnabled[projectRoot] ?? []).includes(candidate.name),
           effectiveEnabled: isEnabledFor(this.state, candidate.name, projectRoot),
           updateSupported: origin !== undefined,
-          modelInvocable: candidate.invocation?.modelInvocable,
+          modelInvocable: this.invocationFor(candidate).modelInvocable,
         }
       })
     return { entries, projectRoots: Object.keys(this.state.projectEnabled).sort() }
+  }
+
+  /** state.json wins over the skill's own frontmatter declaration; without an entry the file decides. */
+  private invocationFor(skill: Pick<SkillCandidate, 'name' | 'invocation'>): SkillInvocationPolicy {
+    const override = this.state.modelInvocation[skill.name]
+    return override === undefined ? skill.invocation : { ...skill.invocation, modelInvocable: override }
   }
 
   /** Dry-run a source: what skills it offers, without installing anything. */
@@ -178,7 +187,7 @@ export class SkillManager {
     })
   }
 
-  async checkUpdates(): Promise<SkillUpdateReport> {
+  async checkUpdates(name?: string): Promise<SkillUpdateReport> {
     await this.loaded
     interface LockEntry {
       readonly source?: string
@@ -195,7 +204,7 @@ export class SkillManager {
       return { entries: [] }
     }
     const installed = new Set((await this.libraryCandidates({})).map(candidate => candidate.name))
-    const entries = Object.entries(lockSkills).filter(([name]) => installed.has(name))
+    const entries = Object.entries(lockSkills).filter(([entryName]) => installed.has(entryName) && (name === undefined || entryName === name))
     const bySource = new Map<string, Array<[string, LockEntry]>>()
     for (const item of entries) {
       const source = item[1].source ?? ''
@@ -250,6 +259,21 @@ export class SkillManager {
     return this.serialize(async () => {
       await this.assertInstalled(name)
       this.state = setEnabled(this.state, name, scope, projectRoot, enabled)
+      await this.persist()
+      this.providerControl?.invalidate()
+      return this.catalog(projectRoot)
+    })
+  }
+
+  /** Flip whether the model may auto-load this skill, overriding its frontmatter declaration. */
+  async setModelInvocable(name: string, modelInvocable: boolean, projectRoot?: string): Promise<SkillCatalog> {
+    return this.serialize(async () => {
+      const candidate = (await this.libraryCandidates({})).find(item => item.name === name)
+      if (candidate === undefined) throw new Error(`skill is not installed: ${name}`)
+      // 与文件声明一致时不留覆盖条目：来源以后改了声明，这个 skill 仍跟着文件走。
+      // 键用 candidate.name（provider 已校验过的 skill 名），不用 RPC 原样传入的字符串。
+      const override = modelInvocable === candidate.invocation.modelInvocable ? undefined : modelInvocable
+      this.state = setModelInvocation(this.state, candidate.name, override)
       await this.persist()
       this.providerControl?.invalidate()
       return this.catalog(projectRoot)
@@ -392,10 +416,19 @@ async function handleRpc(manager: SkillManager, endpoint: string, payload: unkno
           requiredBoolean(args.enabled, 'enabled'),
         ),
       }
+    case 'set-model-invocation':
+      return {
+        ok: true as const,
+        value: await manager.setModelInvocable(
+          requiredString(args.name, 'name'),
+          requiredBoolean(args.modelInvocable, 'modelInvocable'),
+          asOptionalString(args.projectRoot),
+        ),
+      }
     case 'remove':
       return { ok: true as const, value: await manager.remove(requiredString(args.name, 'name'), asOptionalString(args.projectRoot)) }
     case 'check-updates':
-      return { ok: true as const, value: await manager.checkUpdates() }
+      return { ok: true as const, value: await manager.checkUpdates(asOptionalString(args.name)) }
     default:
       throw new Error(`unknown skill-manager endpoint: ${endpoint}`)
   }

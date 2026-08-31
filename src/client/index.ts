@@ -33,7 +33,7 @@ interface ManagerApi {
 }
 
 interface SectionProps extends ManagerApi {
-  readonly checkUpdates: () => Promise<SkillUpdateReport>
+  readonly checkUpdates: (name?: string) => Promise<SkillUpdateReport>
   readonly pickDirectory: () => Promise<string | null>
   readonly loopback: boolean
 }
@@ -182,7 +182,7 @@ export function apply(ctx: ClientContext): void {
   const mutate = (endpoint: string, payload: Record<string, unknown>): Promise<SkillCatalog> => request(endpoint, payload)
   const inspect = (path: string): Promise<SkillInspectResult> => request('inspect', { path })
   const inspectRemote = (repository: string): Promise<SkillInspectResult> => request('inspect-remote', { repository })
-  const checkUpdates = (): Promise<SkillUpdateReport> => request('check-updates')
+  const checkUpdates = (name?: string): Promise<SkillUpdateReport> => request('check-updates', name ? { name } : {})
 
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
@@ -206,7 +206,9 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
   const [catalog, setCatalog] = useState<SkillCatalog | null>(null)
   const [query, setQuery] = useState('')
   const [busy, setBusy] = useState(false)
-  const [checking, setChecking] = useState(false)
+  // 逐个 skill 记账正在检测的名字：单一全局布尔会把其它行的检测按钮一起置灰，
+  // 快速连点时第二次点击落在 disabled 按钮上直接被吞掉。
+  const [checkingNames, setCheckingNames] = useState<ReadonlySet<string>>(() => new Set())
   const [statuses, setStatuses] = useState<Readonly<Record<string, SkillUpdateStatus>>>({})
   const [error, setError] = useState<string | null>(null)
   const [repositoryOpen, setRepositoryOpen] = useState(false)
@@ -331,19 +333,46 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
   const updateSkill = async (entry: SkillCatalogEntry) => {
     const path = entry.updateSupported ? undefined : await pickDirectory() ?? undefined
     if (!entry.updateSupported && !path) return
-    await run(() => mutate('update', { name: entry.name, path, projectRoot }))
+    if (await run(() => mutate('update', { name: entry.name, path, projectRoot }))) {
+      setStatuses(prev => ({ ...prev, [entry.name]: 'current' }))
+    }
   }
 
+  const markChecking = (names: readonly string[], active: boolean) => setCheckingNames(prev => {
+    const next = new Set(prev)
+    for (const name of names) {
+      if (active) next.add(name)
+      else next.delete(name)
+    }
+    return next
+  })
+  const checking = checkingNames.size > 0
+
   const checkAll = async () => {
-    setChecking(true)
+    const names = (catalog?.entries ?? []).map(entry => entry.name)
+    markChecking(names, true)
     setError(null)
     try {
       const report = await checkUpdates()
-      setStatuses(Object.fromEntries(report.entries.map(entry => [entry.name, entry.status])))
+      const reported = Object.fromEntries(report.entries.map(entry => [entry.name, entry.status]))
+      setStatuses(Object.fromEntries(names.map(name => [name, reported[name] ?? 'unknown'])))
     } catch (reason) {
       setError(messageOf(reason))
     } finally {
-      setChecking(false)
+      markChecking(names, false)
+    }
+  }
+
+  const checkSkill = async (name: string) => {
+    markChecking([name], true)
+    setError(null)
+    try {
+      const report = await checkUpdates(name)
+      setStatuses(prev => ({ ...prev, [name]: report.entries.find(entry => entry.name === name)?.status ?? 'unknown' }))
+    } catch (reason) {
+      setError(messageOf(reason))
+    } finally {
+      markChecking([name], false)
     }
   }
 
@@ -367,9 +396,13 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
     entry,
     projectAvailable: projectRoot !== undefined,
     busy,
+    checking: checkingNames.has(entry.name),
     updateStatus: statuses[entry.name],
     onScopeChange: (scope: 'global' | 'project', enabled: boolean) => void run(() =>
       mutate('set-enabled', { name: entry.name, scope, projectRoot, enabled })),
+    onModelInvocationChange: (modelInvocable: boolean) => void run(() =>
+      mutate('set-model-invocation', { name: entry.name, modelInvocable, projectRoot })),
+    onCheck: () => void checkSkill(entry.name),
     onUpdate: () => void updateSkill(entry),
     onRemove: () => removeSkill(entry),
   })
@@ -595,9 +628,8 @@ function ProjectSkillPopover(props: Pick<ManagerApi, 'list' | 'mutate'> & { read
   )
 }
 
-const UPDATE_BADGE: Readonly<Record<SkillUpdateStatus, { label: string; color: string; background: string; border: string }>> = {
+const UPDATE_BADGE: Readonly<Partial<Record<SkillUpdateStatus, { label: string; color: string; background: string; border: string }>>> = {
   'update-available': { label: '有更新', color: tokens.accent, background: 'rgba(99, 102, 241, .1)', border: '1px solid rgba(99, 102, 241, .35)' },
-  'current': { label: '已是最新', color: tokens.success, background: 'rgba(22, 163, 74, .1)', border: '1px solid rgba(22, 163, 74, .3)' },
   'deleted-upstream': { label: '上游已删除', color: tokens.danger, background: 'rgba(220, 38, 38, .08)', border: '1px solid rgba(220, 38, 38, .3)' },
   'unknown': { label: '无法检测', color: tokens.secondary, background: 'rgba(148, 163, 184, .09)', border: '1px solid transparent' },
 }
@@ -606,13 +638,18 @@ function SkillRow(props: {
   readonly entry: SkillCatalogEntry
   readonly projectAvailable: boolean
   readonly busy: boolean
+  /** 只表示这一行自己在检测；不能传全局「有检测在跑」，否则别的行按钮会被一起置灰。 */
+  readonly checking: boolean
   readonly updateStatus?: SkillUpdateStatus
   readonly onScopeChange: (scope: 'global' | 'project', enabled: boolean) => void
+  readonly onModelInvocationChange: (modelInvocable: boolean) => void
+  readonly onCheck: () => void
   readonly onUpdate: () => void
   readonly onRemove: () => void
 }): ReturnType<typeof h> {
-  const { entry, projectAvailable, busy, updateStatus, onScopeChange, onUpdate, onRemove } = props
+  const { entry, projectAvailable, busy, checking, updateStatus, onScopeChange, onModelInvocationChange, onCheck, onUpdate, onRemove } = props
   const badge = updateStatus ? UPDATE_BADGE[updateStatus] : undefined
+  const manualOnly = entry.modelInvocable === false
   return h('article', {
     className: 'dsh-skill-manager-row',
     style: {
@@ -630,7 +667,7 @@ function SkillRow(props: {
         h('strong', { style: { ...monoStyle, fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, entry.name),
         badge ? h('span', { style: { display: 'inline-flex', alignItems: 'center', flex: '0 1 auto', padding: '2px 6px', borderRadius: 999, fontSize: 11, lineHeight: '16px', whiteSpace: 'nowrap', color: badge.color, background: badge.background, border: badge.border } }, badge.label) : null,
         h(SourceBadge, { entry }),
-        entry.modelInvocable === false ? h('span', { title: 'skill 声明了 disable-model-invocation：模型不会自动调用，只能用户手动引用', style: { display: 'inline-flex', alignItems: 'center', flex: '0 1 auto', padding: '2px 6px', borderRadius: 999, fontSize: 11, lineHeight: '16px', whiteSpace: 'nowrap', color: tokens.secondary, background: 'rgba(148, 163, 184, .09)' } }, '仅手动') : null,
+        manualOnly ? h('span', { title: '仅手动：模型不会自动调用，只能用 /名字 手动引用', style: { display: 'inline-flex', alignItems: 'center', flex: '0 1 auto', padding: '2px 6px', borderRadius: 999, fontSize: 11, lineHeight: '16px', whiteSpace: 'nowrap', color: tokens.secondary, background: 'rgba(148, 163, 184, .09)' } }, '仅手动') : null,
         h(StatusBadge, { active: entry.globalEnabled, icon: Globe, label: '全局' }),
         projectAvailable ? h(StatusBadge, { active: entry.projectEnabled, icon: FolderGit, label: '项目' }) : null,
       ),
@@ -658,8 +695,25 @@ function SkillRow(props: {
           }, label)
         }),
       ),
-      h('button', { type: 'button', style: { ...iconButtonStyle, color: tokens.secondary }, disabled: busy, onClick: onUpdate, title: entry.updateSupported ? (entry.sourceType === 'git' ? '从远程仓库更新' : '从原始目录更新') : '选择来源目录并更新', 'aria-label': `更新 ${entry.name}` },
-        h(RefreshCw, { size: 15, 'aria-hidden': true })),
+      h(Pill, {
+        active: manualOnly,
+        disabled: busy,
+        'aria-pressed': manualOnly,
+        title: manualOnly
+          ? '当前仅手动：模型不会自动调用；点按恢复为模型可自动调用'
+          : '点按改为仅手动：模型不再自动调用，只能用 /名字 手动引用',
+        onClick: () => onModelInvocationChange(manualOnly),
+        style: { flex: '0 0 auto' },
+      }, '仅手动'),
+      updateStatus === 'current'
+        ? h('span', { title: '已是最新', style: { color: tokens.success, fontSize: 12, fontWeight: 500, padding: '0 4px', whiteSpace: 'nowrap' } }, '最新')
+        : updateStatus === 'update-available' || updateStatus === 'unknown'
+          ? h('button', { type: 'button', style: { ...iconButtonStyle, color: tokens.accent }, disabled: busy || checking, onClick: onUpdate, title: entry.updateSupported ? (entry.sourceType === 'git' ? '从远程仓库更新' : '从原始目录更新') : '选择来源目录并更新', 'aria-label': `更新 ${entry.name}` },
+            h(RefreshCw, { size: 15, 'aria-hidden': true }))
+          : h('button', { type: 'button', style: { ...iconButtonStyle, color: tokens.secondary }, disabled: busy || checking, onClick: onCheck, title: checking ? '检测中…' : `检测 ${entry.name} 是否有更新`, 'aria-label': `检测 ${entry.name} 更新` },
+            checking
+              ? h(RefreshCw, { size: 15, 'aria-hidden': true, style: spinnerStyle })
+              : h(SearchCheck, { size: 15, 'aria-hidden': true })),
       h('button', { type: 'button', style: { ...iconButtonStyle, color: tokens.danger }, onClick: onRemove, title: '从库中移除', 'aria-label': `移除 ${entry.name}` },
         h(Trash2, { size: 15, 'aria-hidden': true })),
     ),

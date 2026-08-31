@@ -10,6 +10,8 @@ export interface ManagerState {
   readonly version: 1
   readonly globalEnabled: readonly string[]
   readonly projectEnabled: Readonly<Record<string, readonly string[]>>
+  /** Per-skill override of the frontmatter `disable-model-invocation` declaration; absent keys follow the file. */
+  readonly modelInvocation: Readonly<Record<string, boolean>>
 }
 
 export interface SkillCatalogEntry {
@@ -22,7 +24,7 @@ export interface SkillCatalogEntry {
   readonly projectEnabled: boolean
   readonly effectiveEnabled: boolean
   readonly updateSupported: boolean
-  /** Whether the model-facing catalog includes this skill (frontmatter disable-model-invocation). */
+  /** Effective model-invocation state: the frontmatter declaration unless state.json overrides it. */
   readonly modelInvocable?: boolean
 }
 

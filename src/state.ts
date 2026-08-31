@@ -5,6 +5,7 @@ export const EMPTY_STATE: ManagerState = {
   version: 1,
   globalEnabled: [],
   projectEnabled: {},
+  modelInvocation: {},
 }
 
 export function normalizeState(value: unknown): ManagerState {
@@ -21,6 +22,8 @@ export function normalizeState(value: unknown): ManagerState {
     version: 1,
     globalEnabled: cleanNames(value.globalEnabled),
     projectEnabled: cleanProjects(value.projectEnabled),
+    // Absent in state files written before the override existed; a malformed value falls back to "follow the file".
+    modelInvocation: isRecord(value.modelInvocation) ? cleanInvocation(value.modelInvocation) : {},
   }
 }
 
@@ -54,7 +57,16 @@ export function removeSkill(state: ManagerState, name: string): ManagerState {
         .map(([root, names]) => [root, names.filter(item => item !== name)] as const)
         .filter(([, names]) => names.length > 0),
     ),
+    modelInvocation: setModelInvocation(state, name, undefined).modelInvocation,
   }
+}
+
+/** Override (or, with `undefined`, stop overriding) the skill's frontmatter model-invocation declaration. */
+export function setModelInvocation(state: ManagerState, name: string, modelInvocable: boolean | undefined): ManagerState {
+  // Object.fromEntries 而不是下标赋值：name 来自 RPC，`__proto__` 下标赋值会改原型而不是建键。
+  const rest = Object.entries(state.modelInvocation).filter(([key]) => key !== name)
+  const next = modelInvocable === undefined ? rest : [...rest, [name, modelInvocable] as const]
+  return { ...state, modelInvocation: Object.fromEntries(next.sort(([a], [b]) => a.localeCompare(b))) }
 }
 
 export function isPathWithin(root: string, target: string): boolean {
@@ -88,6 +100,10 @@ function cleanProjects(value: Record<string, unknown>): Record<string, string[]>
     if (clean.length > 0) result[root] = clean
   }
   return result
+}
+
+function cleanInvocation(value: Record<string, unknown>): Record<string, boolean> {
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'))
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

@@ -32,7 +32,7 @@ After changing the bundle or installed dependencies, restart the Harness service
 1. Open Web Settings, then select **Skill 管理** in the sidebar.
 2. Choose **本机** to select a local skill folder, or **仓库** to enter a GitHub `owner/repo`, HTTPS URL, SSH URL, or other Git URL.
 3. When a source offers more than one skill, a checklist shows what it contains; untick what you do not want, then **导入所选 (N)** installs only the selection. Single-skill sources install directly.
-4. Enable **全局** or select a workspace and enable **项目**. Rows whose frontmatter sets `disable-model-invocation` show a **仅手动** badge: the model never auto-loads them, only explicit user references do.
+4. Enable **全局** or select a workspace and enable **项目**. The **仅手动** pill on a row switches model invocation off or on: a manual-only skill is kept out of the model-facing catalog and the `skill` tool, and only an explicit `/name` reference loads it. Rows whose frontmatter sets `disable-model-invocation` start manual-only; the pill overrides that declaration in either direction and is stored in `state.json`, so `SKILL.md` is never rewritten and an update cannot silently drop the setting.
 5. Use the refresh icon on a row to reinstall that skill from the source recorded in `skills-lock.json`.
 6. Use **检测** to check every installed skill for upstream updates without applying them; independent sources and skill folders are checked concurrently, and rows show a badge (有更新 / 已是最新 / 上游已删除 / 无法检测). When updates are found, **全部更新 (N)** applies them one by one and re-checks automatically.
 7. Use the wrench control beside the composer attachment button to toggle installed skills for the current session workspace only.
@@ -52,7 +52,7 @@ $DSH_HOME/skill-manager/skills-lock.json
 $DSH_HOME/skill-manager/state.json
 ```
 
-`skills-lock.json` is the only source-of-origin record. `state.json` stores only global and project enablement.
+`skills-lock.json` is the only source-of-origin record. `state.json` stores global and project enablement plus the per-skill model-invocation override.
 
 Override the storage root in `cordis.patch.yml`:
 
@@ -77,7 +77,7 @@ The test suite covers scope resolution, current-state validation, local and Git 
 ## Design boundaries
 
 - This plugin runs the packaged `skills` CLI with an argv array and a private storage `cwd`; it never modifies the active workspace's `.agents/skills` directory.
-- It does not rewrite an imported `SKILL.md` or alter the source folder or repository. Broken or escaping source symlinks are rejected before the CLI copies anything.
+- It does not rewrite an imported `SKILL.md` or alter the source folder or repository. The **仅手动** switch lives in `state.json` and is applied when the provider resolves each skill's invocation policy. Broken or escaping source symlinks are rejected before the CLI copies anything.
 - Skills already present in other filesystem roots remain owned by those roots; import them into this private library when they should be managed here.
 - Import and mutation RPCs are loopback-only because they write local files.
 - DSH is in developer preview; bundle and Cordis APIs can change between Harness releases.

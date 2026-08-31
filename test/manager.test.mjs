@@ -67,7 +67,7 @@ test('removes the private library entry and its scope state', async (context) =>
   assert.deepEqual(catalog.entries, [])
   await assert.rejects(readFile(join(storageDir, '.agents', 'skills', 'alpha', 'SKILL.md'), 'utf8'), /ENOENT/)
   const state = JSON.parse(await readFile(join(storageDir, 'state.json'), 'utf8'))
-  assert.deepEqual(state, { version: 1, globalEnabled: [], projectEnabled: {} })
+  assert.deepEqual(state, { version: 1, globalEnabled: [], projectEnabled: {}, modelInvocation: {} })
 })
 
 test('imports and updates skills from a Git repository', async (context) => {
@@ -153,6 +153,56 @@ test('exposes the model-invocation policy on catalog entries', async (context) =
   assert.equal(catalog.entries[0].modelInvocable, false)
 })
 
+test('toggles the model-invocation policy without rewriting SKILL.md', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skill-manager-invocation-toggle-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+
+  const source = join(root, 'source', 'alpha')
+  const storageDir = join(root, 'storage')
+  await mkdir(source, { recursive: true })
+  const declared = `---\nname: alpha\ndescription: Manual only.\ndisable-model-invocation: true\n---\n\nBody.\n`
+  await writeFile(join(source, 'SKILL.md'), declared, 'utf8')
+
+  const manager = new SkillManager(hostContext, { storageDir })
+  const control = new AbortController()
+  context.after(() => control.abort())
+  const provider = manager.provider({ signal: control.signal, invalidate: () => undefined })
+
+  await manager.install(source, undefined)
+  await manager.setEnabled('alpha', 'global', undefined, true)
+  const stateFile = async () => JSON.parse(await readFile(join(storageDir, 'state.json'), 'utf8'))
+  const listed = async () => (await provider.list({}))[0]
+  const loaded = async () => provider.get(await listed(), {})
+
+  assert.equal((await listed()).invocation.modelInvocable, false)
+  assert.equal((await loaded()).invocation.modelInvocable, false)
+
+  // 覆盖成「模型可自动调用」：list 与 get 都要跟着变，SKILL.md 一个字节都不动。
+  assert.equal((await manager.setModelInvocable('alpha', true)).entries[0].modelInvocable, true)
+  assert.equal((await listed()).invocation.modelInvocable, true)
+  assert.equal((await listed()).invocation.userInvocable, true)
+  assert.equal((await loaded()).invocation.modelInvocable, true)
+  assert.equal(await readFile(join(storageDir, '.agents', 'skills', 'alpha', 'SKILL.md'), 'utf8'), declared)
+  assert.deepEqual((await stateFile()).modelInvocation, { alpha: true })
+
+  // 调回与文件声明一致时不留覆盖条目。
+  assert.equal((await manager.setModelInvocable('alpha', false)).entries[0].modelInvocable, false)
+  assert.deepEqual((await stateFile()).modelInvocation, {})
+
+  // 文件没有声明的 skill 也能被关成仅手动。
+  const plain = join(root, 'source-beta', 'beta')
+  await mkdir(plain, { recursive: true })
+  await writeFile(join(plain, 'SKILL.md'), skillMarkdown('Auto by default', 'Body.', 'beta'), 'utf8')
+  await manager.install(join(root, 'source-beta'), ['beta'])
+  await manager.setEnabled('beta', 'global', undefined, true)
+  const catalog = await manager.setModelInvocable('beta', false)
+  assert.equal(catalog.entries.find(entry => entry.name === 'beta').modelInvocable, false)
+  assert.deepEqual((await stateFile()).modelInvocation, { beta: false })
+  assert.equal((await provider.list({})).find(entry => entry.name === 'beta').invocation.modelInvocable, false)
+
+  await assert.rejects(manager.setModelInvocable('missing', false), /not installed/)
+})
+
 test('rejects repository symlinks that escape the source root', async (context) => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-skill-manager-symlink-'))
   context.after(() => rm(root, { recursive: true, force: true }))
@@ -211,6 +261,7 @@ test('checks local and git sources for updates without applying them', async (co
 
   const statusOf = async () => Object.fromEntries((await manager.checkUpdates()).entries.map(entry => [entry.name, entry.status]))
   assert.deepEqual(await statusOf(), { alpha: 'current', beta: 'current' })
+  assert.deepEqual(await manager.checkUpdates('alpha'), { entries: [{ name: 'alpha', status: 'current' }] })
 
   await writeFile(join(localSkill, 'SKILL.md'), skillMarkdown('Local two', 'Version two.'), 'utf8')
   await writeFile(join(gitSkill, 'SKILL.md'), `---\nname: beta\ndescription: Git two\n---\n\nVersion two.\n`, 'utf8')
@@ -218,6 +269,7 @@ test('checks local and git sources for updates without applying them', async (co
   await execFileAsync('git', ['-C', repository, 'commit', '-m', 'update'])
 
   assert.deepEqual(await statusOf(), { alpha: 'update-available', beta: 'update-available' })
+  assert.deepEqual(await manager.checkUpdates('beta'), { entries: [{ name: 'beta', status: 'update-available' }] })
   // Detection never applies the update.
   assert.equal(await readFile(join(storageDir, '.agents', 'skills', 'alpha', 'SKILL.md'), 'utf8'), skillMarkdown('Local one', 'Version one.'))
 })
@@ -320,6 +372,6 @@ test('serializes concurrent mutations instead of losing updates', async (context
   assert.deepEqual(second.entries, [])
   assert.deepEqual(
     JSON.parse(await readFile(join(storageDir, 'state.json'), 'utf8')),
-    { version: 1, globalEnabled: [], projectEnabled: {} },
+    { version: 1, globalEnabled: [], projectEnabled: {}, modelInvocation: {} },
   )
 })
