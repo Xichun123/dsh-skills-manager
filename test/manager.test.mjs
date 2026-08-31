@@ -290,3 +290,36 @@ test('rejects credentials embedded in repository URLs', async (context) => {
     /do not embed credentials/,
   )
 })
+
+test('serializes concurrent mutations instead of losing updates', async (context) => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-skill-manager-concurrent-mutate-'))
+  context.after(() => rm(root, { recursive: true, force: true }))
+
+  const storageDir = join(root, 'storage')
+  for (const name of ['alpha', 'beta']) {
+    await mkdir(join(root, `source-${name}`, name), { recursive: true })
+    await writeFile(join(root, `source-${name}`, name, 'SKILL.md'), skillMarkdown(`${name} description`, 'Body.', name), 'utf8')
+  }
+
+  // Two rapid imports fork the skills CLI, which read-modify-writes one shared
+  // skills-lock.json: unserialized, the second write drops the first skill's source.
+  const manager = new SkillManager(hostContext, { storageDir })
+  await Promise.all([
+    manager.install(join(root, 'source-alpha')),
+    manager.install(join(root, 'source-beta')),
+  ])
+
+  const catalog = await manager.catalog()
+  assert.deepEqual(catalog.entries.map(entry => entry.name), ['alpha', 'beta'])
+  assert.deepEqual(catalog.entries.map(entry => entry.updateSupported), [true, true])
+
+  // Removals fired back to back must both leave the library and the scope state.
+  await manager.setEnabled('alpha', 'global', undefined, true)
+  await manager.setEnabled('beta', 'global', undefined, true)
+  const [, second] = await Promise.all([manager.remove('alpha'), manager.remove('beta')])
+  assert.deepEqual(second.entries, [])
+  assert.deepEqual(
+    JSON.parse(await readFile(join(storageDir, 'state.json'), 'utf8')),
+    { version: 1, globalEnabled: [], projectEnabled: {} },
+  )
+})

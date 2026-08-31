@@ -42,6 +42,7 @@ export class SkillManager {
   private readonly stateFile: string
   private state: ManagerState = EMPTY_STATE
   private readonly loaded: Promise<void>
+  private mutations: Promise<void> = Promise.resolve()
   private providerControl: SkillProviderControl | undefined
   private lazyProvider: FileSystemSkillProvider | undefined
 
@@ -113,7 +114,7 @@ export class SkillManager {
           modelInvocable: candidate.invocation?.modelInvocable,
         }
       })
-    return { entries }
+    return { entries, projectRoots: Object.keys(this.state.projectEnabled).sort() }
   }
 
   /** Dry-run a source: what skills it offers, without installing anything. */
@@ -150,9 +151,11 @@ export class SkillManager {
   private async installSource(source: string, skills: readonly string[] | undefined, projectRoot: string | undefined, sourceType: 'local' | 'git'): Promise<SkillCatalog> {
     await validateSource(source, sourceType)
     const selection = skills !== undefined && skills.length > 0 ? skills.flatMap(name => ['--skill', name]) : ['--skill', '*']
-    await this.runSkills('install', ['add', source, ...selection, '--agent', 'universal', '--yes'])
-    this.providerControl?.invalidate()
-    return this.catalog(projectRoot)
+    return this.serialize(async () => {
+      await this.runSkills('install', ['add', source, ...selection, '--agent', 'universal', '--yes'])
+      this.providerControl?.invalidate()
+      return this.catalog(projectRoot)
+    })
   }
 
   async update(name: string, sourcePath: string | undefined, projectRoot?: string): Promise<SkillCatalog> {
@@ -168,9 +171,11 @@ export class SkillManager {
     if (!origin) throw new Error('the original source is unknown; select the skill source folder to update it')
     await validateSource(origin.source, origin.sourceType)
 
-    await this.runSkills('update', ['add', origin.source, '--skill', name, '--agent', 'universal', '--yes'])
-    this.providerControl?.invalidate()
-    return this.catalog(projectRoot)
+    return this.serialize(async () => {
+      await this.runSkills('update', ['add', origin.source, '--skill', name, '--agent', 'universal', '--yes'])
+      this.providerControl?.invalidate()
+      return this.catalog(projectRoot)
+    })
   }
 
   async checkUpdates(): Promise<SkillUpdateReport> {
@@ -242,23 +247,34 @@ export class SkillManager {
   }
 
   async setEnabled(name: string, scope: SkillScope, projectRoot: string | undefined, enabled: boolean): Promise<SkillCatalog> {
-    await this.loaded
-    await this.assertInstalled(name)
-    this.state = setEnabled(this.state, name, scope, projectRoot, enabled)
-    await this.persist()
-    this.providerControl?.invalidate()
-    return this.catalog(projectRoot)
+    return this.serialize(async () => {
+      await this.assertInstalled(name)
+      this.state = setEnabled(this.state, name, scope, projectRoot, enabled)
+      await this.persist()
+      this.providerControl?.invalidate()
+      return this.catalog(projectRoot)
+    })
   }
 
   async remove(name: string, projectRoot?: string): Promise<SkillCatalog> {
+    return this.serialize(async () => {
+      await this.assertInstalled(name)
+      await this.runSkills('remove', ['remove', name, '--agent', 'universal', '--yes'])
+      await rm(join(this.library, name), { recursive: true, force: true })
+      this.state = removeSkill(this.state, name)
+      await this.persist()
+      this.providerControl?.invalidate()
+      return this.catalog(projectRoot)
+    })
+  }
+
+  // 变更串行化：并发的 remove/install/update 会各自 fork skills CLI，写同一个
+  // skills-lock.json 和 state.json，交错会丢更新。读取（catalog/checkUpdates）不加锁。
+  private async serialize<T>(task: () => Promise<T>): Promise<T> {
     await this.loaded
-    await this.assertInstalled(name)
-    await this.runSkills('remove', ['remove', name, '--agent', 'universal', '--yes'])
-    await rm(join(this.library, name), { recursive: true, force: true })
-    this.state = removeSkill(this.state, name)
-    await this.persist()
-    this.providerControl?.invalidate()
-    return this.catalog(projectRoot)
+    const next = this.mutations.then(task, task)
+    this.mutations = next.then(() => undefined, () => undefined)
+    return next
   }
 
   private createFilesystemProvider(control: SkillProviderControl, watch: boolean): FileSystemSkillProvider {
@@ -293,7 +309,9 @@ export class SkillManager {
     try {
       const result = await execFileAsync(process.execPath, [skillsCli, ...args], {
         cwd: this.root,
-        env: { ...process.env, NO_COLOR: '1' },
+        // skills CLI 退出前会等一个遥测请求（flushTelemetry 最长 5s），实测让每次
+        // remove/add 从 ~60ms 变成 1.8-3s；关掉遥测即恢复，也不外发本机 skill 使用数据。
+        env: { ...process.env, NO_COLOR: '1', DISABLE_TELEMETRY: '1', DO_NOT_TRACK: '1' },
         timeout: 120_000,
         maxBuffer: 4 * 1024 * 1024,
       })

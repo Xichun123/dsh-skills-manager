@@ -28,6 +28,8 @@ export interface SkillCatalogEntry {
 
 export interface SkillCatalog {
   readonly entries: readonly SkillCatalogEntry[]
+  /** Project folders that have project-scoped skills enabled through this plugin. */
+  readonly projectRoots: readonly string[]
 }
 
 /** One installable skill discovered in a not-yet-installed source. */

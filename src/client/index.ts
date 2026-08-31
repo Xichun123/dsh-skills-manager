@@ -1,5 +1,5 @@
 import { createElement as h, useCallback, useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type ComponentType, type FormEvent } from 'react'
-import { useDismissOnOutsidePointer } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Pill, useDismissOnOutsidePointer } from '@deepseek-ai/dsh-client-ui-primitives'
 import Wrench from 'lucide-react/dist/esm/icons/wrench.mjs'
 import Plus from 'lucide-react/dist/esm/icons/plus.mjs'
 import RefreshCw from 'lucide-react/dist/esm/icons/refresh-cw.mjs'
@@ -12,7 +12,9 @@ import GitBranch from 'lucide-react/dist/esm/icons/git-branch.mjs'
 import PackageOpen from 'lucide-react/dist/esm/icons/package-open.mjs'
 import Puzzle from 'lucide-react/dist/esm/icons/puzzle.mjs'
 import AlertCircle from 'lucide-react/dist/esm/icons/alert-circle.mjs'
-import type { ClientContext, SessionId, SessionListState, WorkspaceListState } from '@deepseek-ai/dsh-client-runtime/client'
+import ChevronDown from 'lucide-react/dist/esm/icons/chevron-down.mjs'
+import ChevronRight from 'lucide-react/dist/esm/icons/chevron-right.mjs'
+import type { ClientContext, SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ConnectionHandle, RpcResult } from '@deepseek-ai/dsh-client-connection/client'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SkillCatalog, SkillCatalogEntry, SkillInspectEntry, SkillInspectResult, SkillUpdateReport, SkillUpdateStatus } from '../types.js'
@@ -21,6 +23,7 @@ import type {} from '@deepseek-ai/dsh-client-connection/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 
+// 'workspaces' 仍需注入：项目范围列表已改用 catalog.projectRoots，但「本机导入」的目录选择器还依赖它
 export const inject = ['connection', 'slots', 'workspaces']
 
 interface ManagerApi {
@@ -34,7 +37,6 @@ interface SectionProps extends ManagerApi {
   readonly checkUpdates: () => Promise<SkillUpdateReport>
   readonly pickDirectory: () => Promise<string | null>
   readonly loopback: boolean
-  readonly useWorkspaces: SnapshotSelectorHook<WorkspaceListState>
 }
 
 interface ComposerProps extends ManagerApi {
@@ -144,8 +146,7 @@ export function apply(ctx: ClientContext): void {
 }
 
 function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
-  const { list, mutate, inspect, inspectRemote, checkUpdates, pickDirectory, loopback, useWorkspaces } = props
-  const workspaces = useWorkspaces(state => state)
+  const { list, mutate, inspect, inspectRemote, checkUpdates, pickDirectory, loopback } = props
   const [projectRoot, setProjectRoot] = useState<string | undefined>(undefined)
   const [catalog, setCatalog] = useState<SkillCatalog | null>(null)
   const [query, setQuery] = useState('')
@@ -155,20 +156,25 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
   const [error, setError] = useState<string | null>(null)
   const [repositoryOpen, setRepositoryOpen] = useState(false)
   const [repository, setRepository] = useState('')
+  const [grouped, setGrouped] = useState(false)
+  const [collapsed, setCollapsed] = useState<Readonly<Record<string, boolean>>>({})
+  // 已点删除、等服务端确认的 skill：立刻从列表隐藏，失败再放回
+  const [removing, setRemoving] = useState<ReadonlySet<string>>(() => new Set())
   // 待确认导入：inspect 结果 + 已勾选集合；提交后清空。
   const [selection, setSelection] = useState<{ entries: readonly SkillInspectEntry[]; chosen: ReadonlySet<string>; path?: string; repository?: string } | null>(null)
 
   useEffect(() => { ensureKeyframes() }, [])
 
-  // 追踪用户是否主动选过「只看全局」，避免 useEffect 把它重置回第一个工作区
+  // 追踪用户是否主动选过「只看全局」，避免 useEffect 把它重置回第一个项目
   const userChoseGlobal = useRef(false)
+  const projectRoots = catalog?.projectRoots ?? []
 
   useEffect(() => {
-    // 仅当用户未主动选择「只看全局」时，才自动选中第一个工作区
-    if (projectRoot === undefined && !userChoseGlobal.current && workspaces.items.length > 0) setProjectRoot(workspaces.items[0].path)
-    // 当前选中的工作区被移除时，回退到第一个工作区
-    if (projectRoot !== undefined && !workspaces.items.some(item => item.path === projectRoot)) setProjectRoot(workspaces.items[0]?.path)
-  }, [projectRoot, workspaces.items])
+    // 仅当用户未主动选择「只看全局」时，才自动选中第一个有项目级 skill 的文件夹
+    if (projectRoot === undefined && !userChoseGlobal.current && projectRoots.length > 0) setProjectRoot(projectRoots[0])
+    // 当前选中的文件夹不再有项目级 skill 时，回退到第一个
+    if (projectRoot !== undefined && !projectRoots.includes(projectRoot)) setProjectRoot(projectRoots[0])
+  }, [projectRoot, projectRoots])
 
   const refresh = useCallback(async () => {
     setBusy(true)
@@ -194,7 +200,24 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
   }, [])
 
   const normalizedQuery = query.trim().toLocaleLowerCase()
-  const filtered = (catalog?.entries ?? []).filter(entry => normalizedQuery.length === 0 || `${entry.name} ${entry.description}`.toLocaleLowerCase().includes(normalizedQuery))
+  const filtered = (catalog?.entries ?? []).filter(entry => !removing.has(entry.name)
+    && (normalizedQuery.length === 0 || `${entry.name} ${entry.description}`.toLocaleLowerCase().includes(normalizedQuery)))
+
+  // 乐观删除：先隐藏该行（不锁整页），服务端确认后写回目录；失败则放回并报错。
+  const removeSkill = (entry: SkillCatalogEntry) => {
+    setRemoving(prev => new Set(prev).add(entry.name))
+    setError(null)
+    void mutate('remove', { name: entry.name, projectRoot }).then(
+      next => {
+        setCatalog(next)
+        setRemoving(prev => { const rest = new Set(prev); rest.delete(entry.name); return rest })
+      },
+      reason => {
+        setError(messageOf(reason))
+        setRemoving(prev => { const rest = new Set(prev); rest.delete(entry.name); return rest })
+      },
+    )
+  }
 
   const importSkill = async () => {
     const path = await pickDirectory()
@@ -269,7 +292,7 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
     }
   }
 
-  const updatable = (catalog?.entries ?? []).filter(entry => statuses[entry.name] === 'update-available' && entry.updateSupported)
+  const updatable = (catalog?.entries ?? []).filter(entry => !removing.has(entry.name) && statuses[entry.name] === 'update-available' && entry.updateSupported)
 
   const updateAll = async () => {
     setBusy(true)
@@ -284,18 +307,22 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
     }
   }
 
-  const selectedWorkspace = workspaces.items.find(item => item.path === projectRoot)
+  const projectLabel = projectRoot === undefined ? '当前项目' : projectRoot.split('/').filter(Boolean).pop() ?? projectRoot
   const rowProps = (entry: SkillCatalogEntry) => ({
     key: entry.name,
     entry,
-    projectLabel: selectedWorkspace?.title ?? '当前项目',
+    projectLabel,
     projectAvailable: projectRoot !== undefined,
     busy,
     updateStatus: statuses[entry.name],
-    onGlobalChange: (enabled: boolean) => void run(() => mutate('set-enabled', { name: entry.name, scope: 'global', projectRoot, enabled })),
-    onProjectChange: (enabled: boolean) => void run(() => mutate('set-enabled', { name: entry.name, scope: 'project', projectRoot, enabled })),
+    onScopeChange: (scope: 'off' | 'global' | 'project') => void run(async () => {
+      // 后端串行处理，逐条切换即可；最后一次返回的目录就是最新状态
+      let next = await mutate('set-enabled', { name: entry.name, scope: 'global', projectRoot, enabled: scope === 'global' })
+      if (projectRoot !== undefined) next = await mutate('set-enabled', { name: entry.name, scope: 'project', projectRoot, enabled: scope === 'project' })
+      return next
+    }),
     onUpdate: () => void updateSkill(entry),
-    onRemove: () => void run(() => mutate('remove', { name: entry.name, projectRoot })),
+    onRemove: () => removeSkill(entry),
   })
   return h('div', { style: panelStyle, 'aria-busy': busy },
     h('header', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, flexWrap: 'wrap' } },
@@ -365,9 +392,13 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
         h('span', { style: { flex: '0 0 auto' } }, '项目范围'),
         h('select', { value: projectRoot ?? '__global__', onChange: (event: ChangeEvent<HTMLSelectElement>) => { const value = event.currentTarget.value; if (value === '__global__') { userChoseGlobal.current = true; setProjectRoot(undefined) } else { userChoseGlobal.current = false; setProjectRoot(value) } }, style: { ...selectStyle, flex: '1 1 auto', minWidth: 0, maxWidth: 'none' } },
           h('option', { value: '__global__' }, '只看全局'),
-          ...workspaces.items.map(workspace => h('option', { key: workspace.workspaceId, value: workspace.path }, workspace.title)),
+          // 当前选中的文件夹可能已不在 projectRoots（刚被清空），保留显示以免选中态凭空消失
+          ...(projectRoot !== undefined && !projectRoots.includes(projectRoot) ? [projectRoot] : projectRoots).map(root =>
+            h('option', { key: root, value: root, title: root }, root.split('/').filter(Boolean).pop() ?? root)),
         ),
       ),
+      h(Pill, { active: grouped, onClick: () => setGrouped(value => !value), title: '按来源仓库分组', 'aria-pressed': grouped, style: { flex: '0 0 auto' } },
+        h(GitBranch, { size: 12, 'aria-hidden': true }), '按仓库'),
     ),
     error ? h('div', { role: 'alert', style: { display: 'flex', gap: 8, alignItems: 'center', margin: 0, padding: '9px 12px', borderRadius: 8, fontSize: 13, color: tokens.danger, background: 'rgba(220, 38, 38, .08)', border: '1px solid rgba(220, 38, 38, .28)' } },
       h(AlertCircle, { size: 15, 'aria-hidden': true }), error) : null,
@@ -375,10 +406,44 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
       catalog === null
         ? h('p', { style: { margin: 0, padding: '24px 0', textAlign: 'center', fontSize: 13, color: tokens.secondary } }, '正在读取…')
         : filtered.length === 0
-          ? h(EmptyState, { hasAny: (catalog.entries.length ?? 0) > 0 })
-          : filtered.map(entry => h(SkillRow, rowProps(entry))),
+          ? h(EmptyState, { hasAny: catalog.entries.some(entry => !removing.has(entry.name)) })
+          : grouped
+            ? groupBySource(filtered).map(group => h('div', { key: group.key, style: { display: 'grid', gap: 8 } },
+              h('button', {
+                type: 'button',
+                onClick: () => setCollapsed(prev => ({ ...prev, [group.key]: !prev[group.key] })),
+                'aria-expanded': !collapsed[group.key],
+                style: { display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: 13, fontWeight: 600, textAlign: 'left' },
+              },
+                collapsed[group.key] ? h(ChevronRight, { size: 14, 'aria-hidden': true, style: { color: tokens.secondary, flex: '0 0 auto' } }) : h(ChevronDown, { size: 14, 'aria-hidden': true, style: { color: tokens.secondary, flex: '0 0 auto' } }),
+                h(GitBranch, { size: 13, 'aria-hidden': true, style: { color: tokens.secondary, flex: '0 0 auto' } }),
+                h('span', { title: group.key === '__local__' ? undefined : group.key, style: { ...monoStyle, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, group.label),
+                h('span', { style: { color: tokens.secondary, fontWeight: 400, flex: '0 0 auto' } }, `${group.entries.length} 个`),
+              ),
+              collapsed[group.key] ? null : group.entries.map(entry => h(SkillRow, rowProps(entry))),
+            ))
+            : filtered.map(entry => h(SkillRow, rowProps(entry))),
     ),
   )
+}
+
+function groupBySource(entries: readonly SkillCatalogEntry[]): ReadonlyArray<{ key: string; label: string; entries: readonly SkillCatalogEntry[] }> {
+  const groups = new Map<string, { label: string; entries: SkillCatalogEntry[] }>()
+  for (const entry of entries) {
+    const key = entry.sourceType === 'git' && entry.sourceUrl ? entry.sourceUrl : '__local__'
+    const label = key === '__local__' ? '本机导入' : shortRepoLabel(key)
+    const group = groups.get(key) ?? { label, entries: [] }
+    group.entries.push(entry)
+    groups.set(key, group)
+  }
+  return [...groups.entries()]
+    .map(([key, group]) => ({ key, label: group.label, entries: group.entries }))
+    .sort((a, b) => (a.key === '__local__' ? 1 : b.key === '__local__' ? -1 : a.label.localeCompare(b.label)))
+}
+
+function shortRepoLabel(url: string): string {
+  const match = /^(?:https?:\/\/|git@|ssh:\/\/git@)?([^/:]+)[:/]([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(url)
+  return match ? `${match[2]} (${match[1]})` : url
 }
 
 function EmptyState(props: { readonly hasAny: boolean }): ReturnType<typeof h> {
@@ -494,12 +559,11 @@ function SkillRow(props: {
   readonly projectAvailable: boolean
   readonly busy: boolean
   readonly updateStatus?: SkillUpdateStatus
-  readonly onGlobalChange: (enabled: boolean) => void
-  readonly onProjectChange: (enabled: boolean) => void
+  readonly onScopeChange: (scope: 'off' | 'global' | 'project') => void
   readonly onUpdate: () => void
   readonly onRemove: () => void
 }): ReturnType<typeof h> {
-  const { entry, projectLabel, projectAvailable, busy, updateStatus, onGlobalChange, onProjectChange, onUpdate, onRemove } = props
+  const { entry, projectLabel, projectAvailable, busy, updateStatus, onScopeChange, onUpdate, onRemove } = props
   const badge = updateStatus ? UPDATE_BADGE[updateStatus] : undefined
   return h('article', {
     className: 'dsh-skill-manager-row',
@@ -525,11 +589,26 @@ function SkillRow(props: {
       entry.description ? h('p', { style: { margin: 0, color: tokens.secondary, lineHeight: 1.45, fontSize: 12.5 as never, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' } as CSSProperties }, entry.description) : null,
     ),
     h('div', { className: 'dsh-skill-manager-row-actions', style: { gridColumn: '1 / -1', display: 'flex', width: '100%', minWidth: 0, justifyContent: 'flex-end', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
-      h('input', { type: 'checkbox', checked: entry.globalEnabled, disabled: busy, onChange: (event: ChangeEvent<HTMLInputElement>) => onGlobalChange(event.currentTarget.checked), 'aria-label': `${entry.name} 全局开关`, title: '全局启用', style: checkboxStyle }),
-      projectAvailable ? h('input', { type: 'checkbox', checked: entry.projectEnabled, disabled: busy, onChange: (event: ChangeEvent<HTMLInputElement>) => onProjectChange(event.currentTarget.checked), 'aria-label': `${entry.name} 项目开关`, title: `${projectLabel} 启用`, style: checkboxStyle }) : null,
+      h('div', { role: 'radiogroup', 'aria-label': `${entry.name} 启用范围`, title: '启用范围', style: { display: 'inline-flex', gap: 4, flex: '0 0 auto' } },
+        (projectAvailable
+          ? [['off', '关闭'], ['global', '全局'], ['project', `仅${projectLabel}`]] as const
+          : [['off', '关闭'], ['global', '全局']] as const
+        ).map(([scope, label]) => {
+          const active = (entry.globalEnabled ? 'global' : entry.projectEnabled ? 'project' : 'off') === scope
+          return h(Pill, {
+            key: scope,
+            active,
+            disabled: busy,
+            role: 'radio',
+            'aria-checked': active,
+            // 点当前范围是空操作，别为它跑一趟 RPC
+            onClick: () => { if (!active) onScopeChange(scope) },
+          }, label)
+        }),
+      ),
       h('button', { type: 'button', style: { ...iconButtonStyle, color: tokens.secondary }, disabled: busy, onClick: onUpdate, title: entry.updateSupported ? (entry.sourceType === 'git' ? '从远程仓库更新' : '从原始目录更新') : '选择来源目录并更新', 'aria-label': `更新 ${entry.name}` },
         h(RefreshCw, { size: 15, 'aria-hidden': true })),
-      h('button', { type: 'button', style: { ...iconButtonStyle, color: tokens.danger }, disabled: busy, onClick: onRemove, title: '从库中移除', 'aria-label': `移除 ${entry.name}` },
+      h('button', { type: 'button', style: { ...iconButtonStyle, color: tokens.danger }, onClick: onRemove, title: '从库中移除', 'aria-label': `移除 ${entry.name}` },
         h(Trash2, { size: 15, 'aria-hidden': true })),
     ),
   )
