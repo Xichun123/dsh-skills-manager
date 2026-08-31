@@ -1,6 +1,5 @@
 import { createElement as h, useCallback, useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type ComponentType, type FormEvent } from 'react'
 import { Pill, useDismissOnOutsidePointer } from '@deepseek-ai/dsh-client-ui-primitives'
-import Wrench from 'lucide-react/dist/esm/icons/wrench.mjs'
 import Plus from 'lucide-react/dist/esm/icons/plus.mjs'
 import RefreshCw from 'lucide-react/dist/esm/icons/refresh-cw.mjs'
 import SearchCheck from 'lucide-react/dist/esm/icons/search-check.mjs'
@@ -11,7 +10,6 @@ import Globe from 'lucide-react/dist/esm/icons/globe.mjs'
 import FolderGit from 'lucide-react/dist/esm/icons/folder-git.mjs'
 import GitBranch from 'lucide-react/dist/esm/icons/git-branch.mjs'
 import PackageOpen from 'lucide-react/dist/esm/icons/package-open.mjs'
-import Puzzle from 'lucide-react/dist/esm/icons/puzzle.mjs'
 import AlertCircle from 'lucide-react/dist/esm/icons/alert-circle.mjs'
 import ChevronDown from 'lucide-react/dist/esm/icons/chevron-down.mjs'
 import ChevronRight from 'lucide-react/dist/esm/icons/chevron-right.mjs'
@@ -47,7 +45,62 @@ interface ComposerProps extends ManagerApi {
 
 interface IconProps {
   readonly size?: number | string
+  readonly className?: string
+  readonly style?: CSSProperties
   readonly 'aria-hidden'?: boolean | 'true' | 'false'
+}
+
+const SKILL_ICON_PATHS = [
+  'M12.5113 15.4067C12.4395 15.6249 12.1308 15.6249 12.059 15.4067L11.643 14.1416C11.454 13.567 11.0033 13.1164 10.4288 12.9274L9.16369 12.5113C8.94544 12.4395 8.94544 12.1308 9.16369 12.059L10.4288 11.643C11.0033 11.454 11.454 11.0033 11.643 10.4288L12.059 9.16369C12.1308 8.94544 12.4395 8.94544 12.5113 9.16369L12.9274 10.4288C13.1164 11.0033 13.567 11.454 14.1416 11.643L15.4067 12.059C15.6249 12.1308 15.6249 12.4395 15.4067 12.5113L14.1416 12.9274C13.567 13.1164 13.1164 13.567 12.9274 14.1416L12.5113 15.4067Z',
+  'M9.02246 0.546878C9.9822 0.546878 10.7564 0.545403 11.374 0.612307C12.0042 0.680586 12.5515 0.826244 13.0273 1.17188C13.3052 1.37376 13.5501 1.61868 13.752 1.89649C14.0975 2.37225 14.2432 2.91984 14.3115 3.54981C14.3784 4.16727 14.377 4.94206 14.377 5.90137V8.51367C13.9611 8.29533 13.5071 8.13985 13.0273 8.06055V5.90137C13.0273 4.9121 13.0259 4.22322 12.9688 3.69532C12.9129 3.18044 12.8098 2.89782 12.6592 2.69043C12.5406 2.52724 12.3966 2.38326 12.2334 2.26465C12.026 2.11404 11.7437 2.0109 11.2285 1.95508C10.7005 1.89789 10.0122 1.89649 9.02246 1.89649H6.55371C5.56395 1.89649 4.87569 1.89787 4.34766 1.95508C3.83242 2.01092 3.55022 2.11398 3.34278 2.26465C3.17953 2.38329 3.03564 2.52719 2.91699 2.69043C2.76642 2.89782 2.66325 3.18042 2.60742 3.69532C2.55027 4.22322 2.54883 4.9121 2.54883 5.90137V10.0986C2.54883 11.0878 2.55031 11.7768 2.60742 12.3047C2.66326 12.8196 2.76642 13.1032 2.91699 13.3105C3.03558 13.4736 3.17966 13.6178 3.34278 13.7363C3.5502 13.8869 3.83265 13.9901 4.34766 14.0459C4.87568 14.1031 5.56398 14.1035 6.55371 14.1035H8.08399C8.27443 14.6025 8.55077 15.0585 8.89551 15.4541H6.55371C5.59402 15.4541 4.81976 15.4546 4.20215 15.3877C3.57204 15.3194 3.02468 15.1738 2.54883 14.8281C2.27111 14.6263 2.02606 14.3813 1.82422 14.1035C1.47883 13.6278 1.33293 13.08 1.26465 12.4502C1.19783 11.8327 1.19922 11.0579 1.19922 10.0986V5.90137C1.19922 4.94206 1.1978 4.16727 1.26465 3.54981C1.33295 2.91984 1.47867 2.37225 1.82422 1.89649C2.02613 1.61864 2.27098 1.37379 2.54883 1.17188C3.02472 0.826181 3.57197 0.6806 4.20215 0.612307C4.81976 0.545393 5.594 0.546877 6.55371 0.546878H9.02246ZM9.19629 9.14649H4.5459V7.84571H9.19629V9.14649ZM11.0303 6.10645H4.5459V4.80567H11.0303V6.10645Z',
+] as const
+
+function SkillIcon({ size = 16, ...props }: IconProps): ReturnType<typeof h> {
+  return h('svg', { ...props, width: size, height: size, viewBox: '0 0 16 16', fill: 'none', xmlns: 'http://www.w3.org/2000/svg' },
+    h('path', { d: SKILL_ICON_PATHS[0], fill: 'currentColor' }),
+    h('path', { d: SKILL_ICON_PATHS[1], fill: 'currentColor' }),
+  )
+}
+
+function installSettingsNavIcon(ctx: ClientContext): void {
+  if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return
+  ctx.effect(() => {
+    const attribute = 'data-dsh-skill-manager-nav-icon'
+    const selector = `button[${attribute}]`
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">${SKILL_ICON_PATHS.map(path => `<path d="${path}"/>`).join('')}</svg>`
+    const mask = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`
+    const style = document.createElement('style')
+    style.dataset.dshSkillManager = 'settings-nav-icon'
+    style.textContent = `
+      ${selector} > svg:first-of-type { display: none !important; }
+      ${selector}::before {
+        content: '';
+        display: block;
+        width: 16px;
+        height: 16px;
+        flex: 0 0 16px;
+        background: currentColor;
+        -webkit-mask: ${mask} center / contain no-repeat;
+        mask: ${mask} center / contain no-repeat;
+      }
+    `
+    document.head.appendChild(style)
+
+    const mark = () => {
+      for (const button of document.querySelectorAll<HTMLButtonElement>('nav button')) {
+        if (button.textContent?.trim() === 'Skill 管理') button.setAttribute(attribute, '')
+      }
+    }
+    const observer = new MutationObserver(mark)
+    observer.observe(document.documentElement, { childList: true, subtree: true })
+    mark()
+
+    return () => {
+      observer.disconnect()
+      style.remove()
+      document.querySelectorAll(selector).forEach(element => element.removeAttribute(attribute))
+    }
+  }, 'skill-manager: settings navigation icon')
 }
 
 const ICON_SPIN: [string, string] = ['dsh-skill-manager-spin', 'to { transform: rotate(360deg); }']
@@ -118,6 +171,7 @@ const selectStyle: CSSProperties = {
 const checkboxStyle: CSSProperties = { width: 16, height: 16, margin: 0, accentColor: tokens.accent, flex: '0 0 auto' }
 
 export function apply(ctx: ClientContext): void {
+  installSettingsNavIcon(ctx)
   const connection = (ctx as unknown as { readonly connection: ConnectionHandle }).connection
   const request = async <T>(endpoint: string, payload: Record<string, unknown> = {}): Promise<T> => {
     const result = await connection.rpc.call('/skill-manager', endpoint, payload) as RpcResult<T>
@@ -308,27 +362,21 @@ function SkillManagerSection(props: SectionProps): ReturnType<typeof h> {
     }
   }
 
-  const projectLabel = projectRoot === undefined ? '当前项目' : projectRoot.split('/').filter(Boolean).pop() ?? projectRoot
   const rowProps = (entry: SkillCatalogEntry) => ({
     key: entry.name,
     entry,
-    projectLabel,
     projectAvailable: projectRoot !== undefined,
     busy,
     updateStatus: statuses[entry.name],
-    onScopeChange: (scope: 'off' | 'global' | 'project') => void run(async () => {
-      // 后端串行处理，逐条切换即可；最后一次返回的目录就是最新状态
-      let next = await mutate('set-enabled', { name: entry.name, scope: 'global', projectRoot, enabled: scope === 'global' })
-      if (projectRoot !== undefined) next = await mutate('set-enabled', { name: entry.name, scope: 'project', projectRoot, enabled: scope === 'project' })
-      return next
-    }),
+    onScopeChange: (scope: 'global' | 'project', enabled: boolean) => void run(() =>
+      mutate('set-enabled', { name: entry.name, scope, projectRoot, enabled })),
     onUpdate: () => void updateSkill(entry),
     onRemove: () => removeSkill(entry),
   })
   return h('div', { style: panelStyle, 'aria-busy': busy },
     h('header', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, flexWrap: 'wrap' } },
       h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 } },
-        h(Puzzle, { size: 20, 'aria-hidden': true }),
+        h(SkillIcon, { size: 20, 'aria-hidden': true }),
         h('h2', { style: { margin: 0, fontSize: 18, fontWeight: 600 } }, 'Skill 管理'),
         busy ? h(RefreshCw, { size: 14, 'aria-hidden': true, style: spinnerStyle }) : null,
       ),
@@ -483,7 +531,7 @@ function ComposerSkillButton(props: ComposerProps): ReturnType<typeof h> {
         cursor: projectRoot ? 'pointer' : 'default',
         opacity: projectRoot ? 1 : 0.5,
       },
-    }, h(Wrench, { size: 16, 'aria-hidden': true })),
+    }, h(SkillIcon, { size: 16, 'aria-hidden': true })),
     open && projectRoot ? h(ProjectSkillPopover, { projectRoot, list, mutate, onClose: () => setOpen(false) }) : null,
   )
 }
@@ -534,7 +582,7 @@ function ProjectSkillPopover(props: Pick<ManagerApi, 'list' | 'mutate'> & { read
           : catalog.entries.map(entry => {
             const row = projectPopoverRow(entry, busy)
             return h('label', { key: entry.name, style: { display: 'grid', gridTemplateColumns: '14px minmax(0, 1fr) 30px', gap: 8, alignItems: 'center', padding: '7px 6px', borderRadius: 7, fontSize: 13, cursor: row.disabled ? 'default' : 'pointer' }, title: entry.description || entry.name },
-              h(Puzzle, { size: 13, 'aria-hidden': true, style: { color: entry.effectiveEnabled ? tokens.accent : tokens.secondary } }),
+              h(SkillIcon, { size: 13, 'aria-hidden': true, style: { color: entry.effectiveEnabled ? tokens.accent : tokens.secondary } }),
               h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 } },
                 h('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, entry.name),
                 row.badge ? h(StatusBadge, { active: true, icon: Globe, label: row.badge }) : null,
@@ -556,15 +604,14 @@ const UPDATE_BADGE: Readonly<Record<SkillUpdateStatus, { label: string; color: s
 
 function SkillRow(props: {
   readonly entry: SkillCatalogEntry
-  readonly projectLabel: string
   readonly projectAvailable: boolean
   readonly busy: boolean
   readonly updateStatus?: SkillUpdateStatus
-  readonly onScopeChange: (scope: 'off' | 'global' | 'project') => void
+  readonly onScopeChange: (scope: 'global' | 'project', enabled: boolean) => void
   readonly onUpdate: () => void
   readonly onRemove: () => void
 }): ReturnType<typeof h> {
-  const { entry, projectLabel, projectAvailable, busy, updateStatus, onScopeChange, onUpdate, onRemove } = props
+  const { entry, projectAvailable, busy, updateStatus, onScopeChange, onUpdate, onRemove } = props
   const badge = updateStatus ? UPDATE_BADGE[updateStatus] : undefined
   return h('article', {
     className: 'dsh-skill-manager-row',
@@ -576,7 +623,7 @@ function SkillRow(props: {
     },
   },
     h('div', { className: 'dsh-skill-manager-row-icon', style: { display: 'grid', placeItems: 'center', width: 32, height: 32, borderRadius: 8, color: entry.effectiveEnabled ? tokens.accent : tokens.secondary, background: entry.effectiveEnabled ? 'rgba(99, 102, 241, .1)' : 'rgba(148, 163, 184, .1)' } },
-      h(Puzzle, { size: 16, 'aria-hidden': true }),
+      h(SkillIcon, { size: 16, 'aria-hidden': true }),
     ),
     h('div', { style: { minWidth: 0, display: 'grid', gap: 4 } },
       h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexWrap: 'wrap' } },
@@ -585,25 +632,29 @@ function SkillRow(props: {
         h(SourceBadge, { entry }),
         entry.modelInvocable === false ? h('span', { title: 'skill 声明了 disable-model-invocation：模型不会自动调用，只能用户手动引用', style: { display: 'inline-flex', alignItems: 'center', flex: '0 1 auto', padding: '2px 6px', borderRadius: 999, fontSize: 11, lineHeight: '16px', whiteSpace: 'nowrap', color: tokens.secondary, background: 'rgba(148, 163, 184, .09)' } }, '仅手动') : null,
         h(StatusBadge, { active: entry.globalEnabled, icon: Globe, label: '全局' }),
-        projectAvailable ? h(StatusBadge, { active: entry.projectEnabled, icon: FolderGit, label: projectLabel }) : null,
+        projectAvailable ? h(StatusBadge, { active: entry.projectEnabled, icon: FolderGit, label: '项目' }) : null,
       ),
       entry.description ? h('p', { style: { margin: 0, color: tokens.secondary, lineHeight: 1.45, fontSize: 12.5 as never, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' } as CSSProperties }, entry.description) : null,
     ),
     h('div', { className: 'dsh-skill-manager-row-actions', style: { gridColumn: '1 / -1', display: 'flex', width: '100%', minWidth: 0, justifyContent: 'flex-end', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
-      h('div', { role: 'radiogroup', 'aria-label': `${entry.name} 启用范围`, title: '启用范围', style: { display: 'inline-flex', gap: 4, flex: '0 0 auto' } },
+      h('div', {
+        role: 'radiogroup',
+        'aria-label': `${entry.name} ${projectAvailable ? '项目' : '全局'}开关`,
+        title: projectAvailable ? '项目开关' : '全局开关',
+        style: { display: 'inline-flex', gap: 4, flex: '0 0 auto' },
+      },
         (projectAvailable
-          ? [['off', '关闭'], ['global', '全局'], ['project', `仅${projectLabel}`]] as const
-          : [['off', '关闭'], ['global', '全局']] as const
-        ).map(([scope, label]) => {
-          const active = (entry.globalEnabled ? 'global' : entry.projectEnabled ? 'project' : 'off') === scope
+          ? [['project-off', '项目关', false], ['project-on', '项目开', true]] as const
+          : [['global-off', '关闭', false], ['global-on', '全局', true]] as const
+        ).map(([key, label, enabled]) => {
+          const active = (projectAvailable ? entry.projectEnabled : entry.globalEnabled) === enabled
           return h(Pill, {
-            key: scope,
+            key,
             active,
             disabled: busy,
             role: 'radio',
             'aria-checked': active,
-            // 点当前范围是空操作，别为它跑一趟 RPC
-            onClick: () => { if (!active) onScopeChange(scope) },
+            onClick: () => { if (!active) onScopeChange(projectAvailable ? 'project' : 'global', enabled) },
           }, label)
         }),
       ),
