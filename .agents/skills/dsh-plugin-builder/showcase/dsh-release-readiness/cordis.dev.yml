@@ -1,5 +1,0 @@
-- insert:
-    - id: showcase-release-readiness
-      name: 'file:///C:/Users/kingjly/.grok/skills/dsh-plugin-builder/showcase/dsh-release-readiness/src/index.ts'
-      config:
-        maxChecks: 24

@@ -1,5 +1,0 @@
-- insert:
-    - id: showcase-release-readiness
-      name: dsh-release-readiness
-      config:
-        maxChecks: 24

@@ -35,8 +35,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsdown",
     "prepare": "npm run build",
-    "test": "npm run build && node --test test/*.test.mjs",
-    "validate": "python3 .agents/skills/dsh-plugin-builder/scripts/validate_dsh_plugin.py ."
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "dsh": {
     "bundle": {
