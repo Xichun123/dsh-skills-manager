@@ -39,7 +39,7 @@ interface SectionProps extends ManagerApi {
 }
 
 interface ComposerProps extends ManagerApi {
-  readonly session: { readonly sessionId: SessionId }
+  readonly sessionId: SessionId
   readonly useSessions: SnapshotSelectorHook<SessionListState>
 }
 
@@ -536,8 +536,8 @@ function EmptyState(props: { readonly hasAny: boolean }): ReturnType<typeof h> {
 }
 
 function ComposerSkillButton(props: ComposerProps): ReturnType<typeof h> {
-  const { session, useSessions, list, mutate } = props
-  const projectRoot = useSessions(state => state.byId[session.sessionId]?.cwd)
+  const { sessionId, useSessions, list, mutate } = props
+  const projectRoot = useSessions(state => state.byId[sessionId]?.cwd)
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement | null>(null)
   useDismissOnOutsidePointer(containerRef, open, setOpen)
