@@ -13,17 +13,23 @@ import PackageOpen from 'lucide-react/dist/esm/icons/package-open.mjs'
 import AlertCircle from 'lucide-react/dist/esm/icons/alert-circle.mjs'
 import ChevronDown from 'lucide-react/dist/esm/icons/chevron-down.mjs'
 import ChevronRight from 'lucide-react/dist/esm/icons/chevron-right.mjs'
-import type { ClientContext, SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
-import type { ConnectionHandle, RpcResult } from '@deepseek-ai/dsh-client-connection/client'
-import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
+import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import type { ConnectionHandle, RpcResult, SessionId } from '@deepseek-ai/dsh-client-connection/client'
 import type { SkillCatalog, SkillCatalogEntry, SkillInspectEntry, SkillInspectResult, SkillUpdateReport, SkillUpdateStatus } from '../types.js'
 import { projectPopoverEnabledCount, projectPopoverRow } from './popover.js'
 import type {} from '@deepseek-ai/dsh-client-connection/client'
-import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 
-// 'workspaces' 仍需注入：项目范围列表已改用 catalog.projectRoots，但「本机导入」的目录选择器还依赖它
-export const inject = ['connection', 'slots', 'workspaces']
+// uiWorkspace 仍需注入：「本机导入」走目录选择器
+export const inject = ['connection', 'slots', 'uiWorkspace']
+
+/** Slot `useSessions` 只用到 cwd；不把 session-controller 拉进 peer 图。 */
+interface SessionListState {
+  readonly byId: Readonly<Record<SessionId, { readonly cwd?: string } | undefined>>
+}
 
 interface ManagerApi {
   readonly list: (projectRoot?: string) => Promise<SkillCatalog>
@@ -40,7 +46,7 @@ interface SectionProps extends ManagerApi {
 
 interface ComposerProps extends ManagerApi {
   readonly sessionId: SessionId
-  readonly useSessions: SnapshotSelectorHook<SessionListState>
+  readonly useSessions: <S>(select: (state: SessionListState) => S) => S
 }
 
 interface IconProps {
@@ -189,7 +195,7 @@ export function apply(ctx: ClientContext): void {
     id: 'skills',
     order: 35,
     label: 'Skill 管理',
-    inject: () => ({ list, mutate, inspect, inspectRemote, checkUpdates, pickDirectory: () => ctx.workspaces.pickDirectory(), loopback: connection.isLoopback }),
+    inject: () => ({ list, mutate, inspect, inspectRemote, checkUpdates, pickDirectory: () => ctx.uiWorkspace.pickDirectory(), loopback: connection.isLoopback }),
   }, SkillManagerSection as never))
 
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register({

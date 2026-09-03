@@ -378,7 +378,6 @@ export function apply(ctx: Context, config: Config): void {
     () => ctx.connection.rpc.handle(
       '/skill-manager',
       async (endpoint, payload) => handleRpc(manager, endpoint, payload),
-      { authority: 'loopback' },
     ),
     'dsh-skill-manager: rpc',
   )

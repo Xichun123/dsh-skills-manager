@@ -79,7 +79,7 @@ The test suite covers scope resolution, current-state validation, local and Git 
 - This plugin runs the packaged `skills` CLI with an argv array and a private storage `cwd`; it never modifies the active workspace's `.agents/skills` directory.
 - It does not rewrite an imported `SKILL.md` or alter the source folder or repository. The **仅手动** switch lives in `state.json` and is applied when the provider resolves each skill's invocation policy. Broken or escaping source symlinks are rejected before the CLI copies anything.
 - Skills already present in other filesystem roots remain owned by those roots; import them into this private library when they should be managed here.
-- Import and mutation RPCs are loopback-only because they write local files.
+- Import and mutation controls stay disabled off-loopback because they write local files. RPC itself rides Connection's authenticated `/api`.
 - DSH is in developer preview; bundle and Cordis APIs can change between Harness releases.
 
 ## License

@@ -21,4 +21,4 @@
 - 「仅手动」由 provider 解析 invocation 策略时决定：`state.json` 的覆盖优先于 frontmatter `disable-model-invocation`，list 与 get 两条路径同时套用，因此不改写 `SKILL.md`，更新与重装也不会丢设置；没有覆盖条目时完全跟随文件声明。
 - 一键更新检测按来源分组；不同来源的浅克隆以及同一来源内各 skill 的内容哈希并发执行，且检测过程不修改已安装内容。
 - 设置页使用 `settings.section` 作为左侧一级入口；输入框 `+` 右边的扳手图标控件打开当前会话 cwd 的项目级开关。
-- RPC 仅注册 loopback authority，因为导入和持久化操作会触碰本机文件系统。
+- RPC 走 Connection 已认证的 `/api`（loopback 或 trustedHosts）；导入等写盘操作在 UI 上仍用 `connection.isLoopback` 关掉，非本机页面不能点。
