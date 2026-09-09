@@ -656,6 +656,20 @@ function SkillRow(props: {
   const { entry, projectAvailable, busy, checking, updateStatus, onScopeChange, onModelInvocationChange, onCheck, onUpdate, onRemove } = props
   const badge = updateStatus ? UPDATE_BADGE[updateStatus] : undefined
   const manualOnly = entry.modelInvocable === false
+  const descriptionRef = useRef<HTMLParagraphElement>(null)
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false)
+  const [descriptionOverflowing, setDescriptionOverflowing] = useState(false)
+  const descriptionId = `skill-description-${entry.name}`
+
+  useEffect(() => {
+    const element = descriptionRef.current
+    if (!element || descriptionExpanded) return
+    const measure = () => setDescriptionOverflowing(element.scrollHeight > element.clientHeight + 1)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [entry.description, descriptionExpanded])
   return h('article', {
     className: 'dsh-skill-manager-row',
     style: {
@@ -677,7 +691,22 @@ function SkillRow(props: {
         h(StatusBadge, { active: entry.globalEnabled, icon: Globe, label: '全局' }),
         projectAvailable ? h(StatusBadge, { active: entry.projectEnabled, icon: FolderGit, label: '项目' }) : null,
       ),
-      entry.description ? h('p', { style: { margin: 0, color: tokens.secondary, lineHeight: 1.45, fontSize: 12.5 as never, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' } as CSSProperties }, entry.description) : null,
+      entry.description ? h('p', {
+        id: descriptionId,
+        ref: descriptionRef,
+        style: {
+          margin: 0, color: tokens.secondary, lineHeight: 1.45, fontSize: 12.5,
+          whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', userSelect: 'text', WebkitUserSelect: 'text', cursor: 'text',
+          ...(!descriptionExpanded ? { display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const, overflow: 'hidden' } : {}),
+        },
+      }, entry.description) : null,
+      entry.description && (descriptionOverflowing || descriptionExpanded) ? h('button', {
+        type: 'button',
+        'aria-expanded': descriptionExpanded,
+        'aria-controls': descriptionId,
+        onClick: () => setDescriptionExpanded(expanded => !expanded),
+        style: { ...buttonStyle('ghost', false), justifySelf: 'start', border: 'none', padding: 0, minHeight: 28, color: tokens.accent, fontSize: 12 },
+      }, h(ChevronDown, { size: 14, 'aria-hidden': true, style: { transform: descriptionExpanded ? 'rotate(180deg)' : undefined } }), descriptionExpanded ? '收起' : '展开全部') : null,
     ),
     h('div', { className: 'dsh-skill-manager-row-actions', style: { gridColumn: '1 / -1', display: 'flex', width: '100%', minWidth: 0, justifyContent: 'flex-end', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
       h('div', {
